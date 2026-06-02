@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>回测报告摘要</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    body { height: auto; overflow: auto; padding: 24px; max-width: 900px; margin: 0 auto; }
+    h1 { margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>回测报告摘要</h1>
+  <p><a href="/">← 返回复盘练习</a></p>
+  <ul id="reportList"></ul>
+  <p class="hint">完整 Markdown 在 <code>report/</code> 目录。生成报告：<code>python scripts/run_report.py</code></p>
+  <script>
+    fetch("/api/report/summary")
+      .then((r) => r.json())
+      .then((data) => {
+        const ul = document.getElementById("reportList");
+        if (!data.reports || !data.reports.length) {
+          ul.innerHTML = "<li>暂无报告，请先运行 scripts/run_report.py</li>";
+          return;
+        }
+        data.reports.forEach((r) => {
+          const li = document.createElement("li");
+          const a = document.createElement("a");
+          a.href = r.path;
+          a.textContent = r.name;
+          a.target = "_blank";
+          li.appendChild(a);
+          ul.appendChild(li);
+        });
+      });
+  </script>
+</body>
+</html>

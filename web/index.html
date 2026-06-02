@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>回测练习</title>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <label class="locale-wrap">
+      <select id="localeSelect" class="locale-select" aria-label="Language"></select>
+    </label>
+    <span class="time-label" id="playTime">—</span>
+  </header>
+  <main>
+    <section class="chart-area">
+      <div id="chart"></div>
+      <svg id="drawOverlay" class="draw-overlay" aria-hidden="true"></svg>
+      <div id="rrOverlay" class="rr-overlay hidden" aria-hidden="true"></div>
+      <div id="chartLoading" class="chart-loading hidden" aria-hidden="true">
+        <div class="loading-box" data-i18n="loading.default">加载中…</div>
+      </div>
+    </section>
+    <div id="panelResize" class="panel-resize" data-i18n-title="panel.resize" title="上下拖动调整下单区高度"></div>
+    <section class="stmt-panel" id="stmtPanel">
+      <div class="toolbar-bar">
+        <div id="positionInfo" class="position-info empty" data-i18n="position.none">无持仓</div>
+        <div class="toolbar">
+          <button type="button" id="btnBuy" class="btn-buy" data-i18n="btn.buy" data-i18n-title="btn.buy.title">Buy</button>
+          <button type="button" id="btnSell" class="btn-sell" data-i18n="btn.sell" data-i18n-title="btn.sell.title">Sell</button>
+          <button type="button" id="btnClosePos" data-i18n="btn.close" data-i18n-title="btn.close.title">平仓</button>
+          <span class="tb-sep"></span>
+          <button type="button" id="btnStepPrev" class="btn-step" title="◀" data-i18n-title="btn.stepPrev.title">◀</button>
+          <button type="button" id="btnStepNext" class="btn-step" title="▶" data-i18n-title="btn.stepNext.title">▶</button>
+          <button type="button" id="btnPlay" class="btn-play" data-i18n="btn.play" data-i18n-title="btn.play.title">播放</button>
+          <button type="button" id="btnSpeed" class="btn-speed" title="1x" data-i18n-title="btn.speed.title">1x</button>
+          <span class="tb-sep"></span>
+          <input type="date" id="jumpDate" class="date-input" />
+          <button type="button" id="btnJump" class="btn-jump" data-i18n="btn.jump">跳转回测</button>
+          <span class="tb-sep"></span>
+          <div class="draw-toolbar" role="toolbar" data-i18n-aria="draw.toolbar">
+            <button type="button" class="active" data-tool="cursor" title="↖" data-i18n-title="draw.cursor.title">↖</button>
+            <button type="button" data-tool="hline" title="─" data-i18n-title="draw.hline.title">─</button>
+            <button type="button" data-tool="trend" title="╱" data-i18n-title="draw.trend.title">╱</button>
+            <button type="button" data-tool="fib" title="Fib" data-i18n-title="draw.fib.title">Fib</button>
+            <button type="button" data-tool="clear" title="×" data-i18n-title="draw.clear.title" class="draw-clear">×</button>
+          </div>
+          <span class="tb-sep"></span>
+          <button type="button" id="btnResetData" class="btn-reset" data-i18n="btn.reset" data-i18n-title="btn.reset.title">重置数据</button>
+        </div>
+      </div>
+      <div class="panel-head">
+        <span><span data-i18n="orders.title">下单记录</span> <span class="muted" id="stmtCount"></span></span>
+      </div>
+      <div class="session-stats" id="sessionStats">
+        <div class="stat-grid" id="sessionStatsGrid" data-i18n="orders.empty">暂无平仓记录</div>
+      </div>
+      <div class="stmt-table-wrap">
+        <table class="stmt-table">
+          <thead>
+            <tr>
+              <th data-i18n="table.id">#</th>
+              <th data-i18n="table.open">开仓</th>
+              <th data-i18n="table.dir">方向</th>
+              <th data-i18n="table.entry">入场</th>
+              <th data-i18n="table.close">平仓</th>
+              <th data-i18n="table.pnl">盈亏</th>
+              <th data-i18n="table.exit">出场</th>
+            </tr>
+          </thead>
+          <tbody id="stmtBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>window.__API_BASE__ = "";</script>
+  <script src="/i18n.js"></script>
+  <script src="/drawings.js"></script>
+  <script src="/app.js?v=32"></script>
+</body>
+</html>

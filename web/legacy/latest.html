@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>最新策略回测对比</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f1115; color: #e6eaf2; padding: 20px; max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 20px; }
+  .params { background: #161a22; padding: 12px; border-radius: 8px; margin: 16px 0; font-size: 13px; line-height: 1.6; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid #2a3140; padding: 8px; text-align: left; }
+    th { background: #161a22; }
+    td.num { text-align: right; }
+    a { color: #5b9cf5; }
+    .highlight { color: #3dd68c; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>最新策略 · 回测对比</h1>
+  <p><a href="/">← K 线逐笔</a> · 运行 <code>python3 backtest_latest_strategy.py</code> 更新</p>
+  <div class="params">
+    <strong>规则</strong><br>
+    止损：成交后固定 <strong>5 点</strong>（挂单近 2 点只改入场，<strong>不会</strong>加到 7）<br>
+    市价止盈：同组三单阶梯 <strong>10 / 20 / 30</strong> 点<br>
+    挂单：限价近 <strong>2</strong> 点，原挂单时间内触及即成交 → 同上 SL5 + 阶梯 TP
+  </div>
+  <table id="tbl"></table>
+  <script>
+    fetch("/api/latest/summary")
+      .then((r) => r.json())
+      .then((rows) => {
+        if (rows.error) {
+          document.getElementById("tbl").outerHTML = "<p>" + rows.error + "</p>";
+          return;
+        }
+        const h = ["strategy", "trades", "total_net_usd", "win_rate_pct", "note"];
+        const labels = { strategy: "策略", trades: "笔数", total_net_usd: "总净利 USD", win_rate_pct: "胜率%", note: "说明" };
+        let html = "<tr>" + h.map((k) => `<th>${labels[k]}</th>`).join("") + "</tr>";
+        rows.forEach((r) => {
+          const hl = r.strategy.includes("合并") ? " class='highlight'" : "";
+          html += `<tr${hl}>` + h.map((k) => {
+            const cls = k === "total_net_usd" || k === "trades" ? " class='num'" : "";
+            return `<td${cls}>${r[k] ?? "—"}</td>`;
+          }).join("") + "</tr>";
+        });
+        document.getElementById("tbl").innerHTML = html;
+      });
+  </script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+# 回测复盘练习工具配置
+
+paths:
+  root: .
+  statement: Statement.htm
+  m5_dir: Files
+  m5_glob: "xauusd_xauusdm_m5_{date}.csv"
+
+timezone:
+  broker_utc_offset_hours: 3
+  m5_timezone: UTC
+
+strategy:
+  default_sl: 5
+  default_tp: 20
+  limit_offset: 2
+  ladder_tp: [10, 20, 30]
+
+replay:
+  port: 8765
+  # 图表一次最多绘制的 K 线根数（约 800 根 ≈ 3 个交易日）
+  chart_visible_bars: 800
+  # 首次打开加载最近 N 个交易日
+  initial_trading_days: 30
+  load_chunk_trading_days: 30
+  default_trading_days: 30
+  bar_ms_per_candle_at_1x: 300
+
+server:
+  host: "127.0.0.1"
