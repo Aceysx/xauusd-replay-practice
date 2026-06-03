@@ -1,4 +1,4 @@
-"""M5 K 线加载。"""
+"""M5 K 线加载与多周期聚合。"""
 
 from datetime import timedelta
 from pathlib import Path
@@ -7,6 +7,70 @@ import pandas as pd
 
 from src.core.config import get_paths
 from src.core.timezone import to_chart_unix
+
+TIMEFRAMES: dict[str, dict] = {
+    "5m": {"label": "M5", "minutes": 5},
+    "15m": {"label": "M15", "minutes": 15},
+    "30m": {"label": "M30", "minutes": 30},
+    "1h": {"label": "H1", "minutes": 60},
+    "3h": {"label": "H3", "minutes": 180},
+    "4h": {"label": "H4", "minutes": 240},
+    "1d": {"label": "D1", "minutes": 1440},
+}
+
+_RESAMPLE_FREQ = {
+    "15m": "15min",
+    "30m": "30min",
+    "1h": "1h",
+    "3h": "3h",
+    "4h": "4h",
+}
+
+
+def normalize_timeframe(tf: str | None) -> str:
+    if tf and tf in TIMEFRAMES:
+        return tf
+    return "5m"
+
+
+def timeframe_minutes(tf: str) -> int:
+    return TIMEFRAMES[normalize_timeframe(tf)]["minutes"]
+
+
+def timeframe_bar_seconds(tf: str) -> int:
+    return timeframe_minutes(tf) * 60
+
+
+def resample_bars(bars: pd.DataFrame, tf: str) -> pd.DataFrame:
+    """将 M5 OHLC 聚合为更高周期。"""
+    tf = normalize_timeframe(tf)
+    if bars.empty or tf == "5m":
+        return bars
+
+    df = bars.sort_values("timestamps").copy()
+    df = df.set_index("timestamps")
+
+    if tf == "1d":
+        grouped = df.groupby(df.index.date)
+        out = grouped.agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+        )
+        out.index = pd.to_datetime(out.index)
+    else:
+        freq = _RESAMPLE_FREQ[tf]
+        out = df.resample(freq, label="left", closed="left", origin="start_day").agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+        )
+        out = out.dropna(subset=["open"])
+
+    out = out.reset_index(names="timestamps")
+    return out.sort_values("timestamps").reset_index(drop=True)
 
 
 def m5_file_for_date(d, m5_dir: Path | None = None, pattern: str | None = None) -> Path:

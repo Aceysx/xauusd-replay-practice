@@ -40,16 +40,33 @@ def strategy_defaults() -> dict:
 
 
 def replay_defaults() -> dict:
+    from src.core.m5 import TIMEFRAMES, normalize_timeframe
+
     r = get_config().get("replay", {})
     initial = int(r.get("initial_trading_days", r.get("default_trading_days", 15)))
     chunk = int(r.get("load_chunk_trading_days", initial))
+    base_ms = int(r.get("bar_ms_per_candle_at_1x", 300))
+    default_tf = normalize_timeframe(r.get("default_timeframe", "5m"))
+    timeframes = []
+    for tf_id, meta in TIMEFRAMES.items():
+        minutes = meta["minutes"]
+        timeframes.append(
+            {
+                "id": tf_id,
+                "label": meta["label"],
+                "minutes": minutes,
+                "bar_ms_at_1x": int(base_ms * minutes / 5),
+            }
+        )
     return {
         "port": int(r.get("port", 8765)),
         "chart_visible_bars": int(r.get("chart_visible_bars", 800)),
         "initial_trading_days": initial,
         "load_chunk_trading_days": chunk,
         "default_trading_days": int(r.get("default_trading_days", initial)),
-        "bar_ms_per_candle_at_1x": int(r.get("bar_ms_per_candle_at_1x", 300)),
+        "bar_ms_per_candle_at_1x": base_ms,
+        "default_timeframe": default_tf,
+        "timeframes": timeframes,
     }
 
 

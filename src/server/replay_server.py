@@ -18,7 +18,10 @@ from src.core.m5 import (
     list_available_dates,
     load_m5_by_date_range,
     load_trading_days_ending,
+    normalize_timeframe,
     range_before_trading_day,
+    resample_bars,
+    timeframe_bar_seconds,
 )
 from src.server.history import build_trades_index, report_summary, trade_detail
 
@@ -103,9 +106,12 @@ class ReplayHandler(SimpleHTTPRequestHandler):
             "initial_trading_days": replay["initial_trading_days"],
             "load_chunk_trading_days": replay["load_chunk_trading_days"],
             "bar_ms_per_candle_at_1x": replay["bar_ms_per_candle_at_1x"],
+            "default_timeframe": replay["default_timeframe"],
+            "timeframes": replay["timeframes"],
         }
 
     def _api_bars(self, qs: dict) -> dict:
+        tf = normalize_timeframe(qs.get("tf", [None])[0] or qs.get("timeframe", [None])[0])
         start = qs.get("start", [None])[0]
         end = qs.get("end", [None])[0]
         days = qs.get("days", [None])[0]
@@ -115,36 +121,40 @@ class ReplayHandler(SimpleHTTPRequestHandler):
             n = int(days)
             span = range_before_trading_day(before, n)
             if span is None:
-                return self._bars_payload(pd.DataFrame(), before, before, has_more=False)
+                return self._bars_payload(pd.DataFrame(), before, before, tf=tf, has_more=False)
             start, end = span
-            bars = load_m5_by_date_range(start, end)
+            bars = resample_bars(load_m5_by_date_range(start, end), tf)
             dates = list_available_dates()
             has_more = dates.index(start) > 0 if start in dates else False
-            return self._bars_payload(bars, start, end, has_more=has_more)
+            return self._bars_payload(bars, start, end, tf=tf, has_more=has_more)
 
         if days and not start:
             n = int(days)
             dates = list_available_dates()
             end = end or dates[-1]
-            bars = load_trading_days_ending(end, n)
+            bars = resample_bars(load_trading_days_ending(end, n), tf)
             i = dates.index(end) if end in dates else len(dates) - 1
             start = dates[max(0, i - n + 1)]
             has_more = start != dates[0]
-            return self._bars_payload(bars, start, end, has_more=has_more)
+            return self._bars_payload(bars, start, end, tf=tf, has_more=has_more)
 
         if not start or not end:
             start, end = default_replay_range()
-        bars = load_m5_by_date_range(start, end)
+        bars = resample_bars(load_m5_by_date_range(start, end), tf)
         dates = list_available_dates()
         has_more = start != dates[0] if dates else False
-        return self._bars_payload(bars, start, end, has_more=has_more)
+        return self._bars_payload(bars, start, end, tf=tf, has_more=has_more)
 
-    def _bars_payload(self, bars, start: str, end: str, has_more: bool = False) -> dict:
+    def _bars_payload(
+        self, bars, start: str, end: str, tf: str = "5m", has_more: bool = False
+    ) -> dict:
         ohlc = bars_to_chart_json(bars)
         times = [b["time"] for b in ohlc]
         return {
             "start": start,
             "end": end,
+            "timeframe": tf,
+            "bar_seconds": timeframe_bar_seconds(tf),
             "count": len(ohlc),
             "bars": ohlc,
             "first_ts": times[0] if times else None,

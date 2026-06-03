@@ -25,6 +25,7 @@ replay:
   load_chunk_trading_days: 30
   default_trading_days: 30
   bar_ms_per_candle_at_1x: 300
+  default_timeframe: 5m
 
 server:
   host: "127.0.0.1"

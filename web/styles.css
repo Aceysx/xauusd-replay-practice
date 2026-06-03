@@ -338,6 +338,37 @@ body.resizing-panel {
   background: var(--bg);
   color: var(--text);
 }
+.timeframe-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.timeframe-bar button {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  min-width: 40px;
+  line-height: 1;
+}
+.timeframe-bar button:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.timeframe-bar button.active {
+  border-color: var(--accent);
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+}
+.timeframe-bar button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .tb-sep {
   width: 1px;
   height: 28px;

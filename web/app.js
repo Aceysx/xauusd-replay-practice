@@ -17,6 +17,7 @@ const state = {
   speedIdx: 0,
   lastFrame: 0,
   barMs: 300,
+  timeframe: "5m",
   position: null,
   priceLines: {},
   loadedStart: null,
@@ -115,6 +116,91 @@ function visibleBarsForChart() {
   return state.allBars.slice(0, Math.max(0, end));
 }
 
+function syncPlaybackBarMs() {
+  state.barMs = state.config?.bar_ms_per_candle_at_1x || 300;
+}
+
+function updateTimeframeBarActive() {
+  const bar = $("timeframeBar");
+  if (!bar) return;
+  bar.querySelectorAll("button[data-tf]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tf === state.timeframe);
+  });
+}
+
+function setTimeframeBarDisabled(disabled) {
+  const bar = $("timeframeBar");
+  if (!bar) return;
+  bar.querySelectorAll("button[data-tf]").forEach((btn) => {
+    btn.disabled = disabled;
+  });
+}
+
+function setupTimeframeBar() {
+  const bar = $("timeframeBar");
+  if (!bar || !state.config?.timeframes?.length) return;
+  bar.innerHTML = state.config.timeframes
+    .map(
+      (tf) =>
+        `<button type="button" data-tf="${tf.id}" title="${tf.label}">${tf.label}</button>`
+    )
+    .join("");
+  bar.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-tf]");
+    if (!btn || btn.disabled) return;
+    const next = btn.dataset.tf;
+    if (next === state.timeframe) return;
+    switchTimeframe(next);
+  });
+  updateTimeframeBarActive();
+}
+
+async function switchTimeframe(tf) {
+  if (tf === state.timeframe) return;
+  pause();
+  const cursorTime = state.allBars[state.cursor]?.time ?? null;
+  const prevTf = state.timeframe;
+  state.timeframe = tf;
+  syncPlaybackBarMs();
+  updateTimeframeBarActive();
+  setUiLoading(true, "loading.timeframe");
+  try {
+    let data;
+    if (state.loadedStart && state.loadedEnd) {
+      data = await fetchBarsQuery({ start: state.loadedStart, end: state.loadedEnd });
+    } else {
+      data = await fetchBarsQuery({
+        days: String(state.config.initial_trading_days || 30),
+        end: state.config.last_date,
+      });
+    }
+    if (!data.bars?.length) {
+      state.timeframe = prevTf;
+      syncPlaybackBarMs();
+      updateTimeframeBarActive();
+      alert(t("alert.noBars"));
+      return;
+    }
+    applyBarsPayload(data, { replace: true });
+    let idx = 0;
+    if (cursorTime != null) idx = findBarIndexByTime(cursorTime);
+    else if (state.allBars.length) idx = state.allBars.length - 1;
+    setCursor(idx, {
+      skipLoad: true,
+      skipBarCheck: !state.position,
+      scrollToCursor: true,
+    });
+    savePracticeStateNow();
+  } catch (e) {
+    state.timeframe = prevTf;
+    syncPlaybackBarMs();
+    updateTimeframeBarActive();
+    throw e;
+  } finally {
+    setUiLoading(false);
+  }
+}
+
 function inferHasMoreBefore(data) {
   if (typeof data.has_more_before === "boolean") return data.has_more_before;
   const first = state.config?.first_date;
@@ -146,6 +232,7 @@ function setUiLoading(loading, messageKey = "loading.default") {
     const el = $(id);
     if (el) el.disabled = disable;
   });
+  setTimeframeBarDisabled(disable);
   if ($("btnJump") && messageKey === "loading.jump") {
     $("btnJump").textContent = loading ? t("loading.jump") : t("btn.jump");
   }
@@ -965,7 +1052,8 @@ function initChart() {
 }
 
 async function fetchBarsQuery(params) {
-  const res = await fetch(`${apiUrl("/api/bars")}?${new URLSearchParams(params)}`);
+  const q = { ...params, tf: state.timeframe };
+  const res = await fetch(`${apiUrl("/api/bars")}?${new URLSearchParams(q)}`);
   if (!res.ok) throw new Error(t("error.loadBars"));
   const data = await res.json();
   if (!data.bars) throw new Error(t("error.restartServer"));
@@ -983,6 +1071,7 @@ function applyBarsPayload(data, { replace = false } = {}) {
     state.loadedStart = data.start;
   }
   state.hasMoreBefore = inferHasMoreBefore(data);
+  if (data.timeframe) state.timeframe = data.timeframe;
   return state.allBars.length - (replace ? 0 : prevLen);
 }
 
@@ -1004,6 +1093,7 @@ function buildPracticeSnapshot() {
         }
       : null,
     cursorTime: state.allBars[state.cursor]?.time ?? null,
+    timeframe: state.timeframe,
     replayMode: state.replayMode,
     jumpDate: $("jumpDate")?.value || null,
     loadedStart: state.loadedStart,
@@ -1631,9 +1721,14 @@ async function init() {
 
   const cfgRes = await fetch(apiUrl("/api/config"));
   state.config = await cfgRes.json();
-  state.barMs = state.config.bar_ms_per_candle_at_1x || 300;
+  state.timeframe = state.config.default_timeframe || "5m";
+  syncPlaybackBarMs();
 
   const saved = loadPracticeSnapshot();
+  if (saved?.timeframe) {
+    state.timeframe = saved.timeframe;
+  }
+  setupTimeframeBar();
   renderStatement();
   renderSessionStats();
   updatePositionInfoPanel();
