@@ -102,6 +102,36 @@ main {
 .draw-item.draw-selected line {
   filter: brightness(1.15);
 }
+.draw-item.draw-selected rect {
+  filter: brightness(1.12);
+}
+.draw-text-input {
+  position: absolute;
+  z-index: 6;
+  min-width: 120px;
+  max-width: min(320px, 90%);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: rgba(15, 17, 21, 0.92);
+  color: var(--text);
+  outline: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.draw-text-input.hidden {
+  display: none;
+}
+.draw-item text.draw-text-label {
+  pointer-events: none;
+  user-select: none;
+}
+.draw-item.draw-selected .draw-text-halo {
+  fill: rgba(230, 200, 122, 0.12);
+  stroke: #e6c87a;
+  stroke-width: 1;
+}
 #chart { width: 100%; height: 100%; }
 #chart.dragging { cursor: ns-resize; }
 .rr-overlay {

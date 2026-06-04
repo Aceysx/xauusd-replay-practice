@@ -1,8 +1,11 @@
-/* 图表画线：水平线 / 趋势线 / 斐波那契（可编辑） */
+/* 图表画线：水平线 / 趋势线 / 斐波那契 / 矩形 / 文字（可编辑） */
 
 const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 const HIT_PX = 8;
 const HANDLE_R = 5;
+const TEXT_FONT_SIZE = 14;
+const TEXT_CHAR_W = 8;
+const TEXT_LINE_H = 18;
 
 const drawState = {
   tool: "cursor",
@@ -11,6 +14,8 @@ const drawState = {
   preview: null,
   selectedId: null,
   editDrag: null,
+  rectDragging: false,
+  textEdit: null,
   nextId: 1,
 };
 
@@ -18,6 +23,7 @@ let drawChart = null;
 let drawSeries = null;
 let drawChartEl = null;
 let drawOverlayEl = null;
+let drawTextInputEl = null;
 
 function drawClientToPoint(clientX, clientY) {
   if (!drawChart || !drawSeries || !drawChartEl) return null;
@@ -95,6 +101,21 @@ function drawFibPrices(p1, p2) {
   }));
 }
 
+/** 两点 → 屏幕矩形边界（time 升序，y 为屏幕坐标） */
+function drawRectBounds(p1, p2) {
+  const x1 = drawTimeToX(p1.time);
+  const x2 = drawTimeToX(p2.time);
+  const y1 = drawPriceToY(p1.price);
+  const y2 = drawPriceToY(p2.price);
+  if (x1 == null || x2 == null || y1 == null || y2 == null) return null;
+  return {
+    left: Math.min(x1, x2),
+    right: Math.max(x1, x2),
+    top: Math.min(y1, y2),
+    bottom: Math.max(y1, y2),
+  };
+}
+
 function distPointToSegment(px, py, x1, y1, x2, y2) {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -111,8 +132,93 @@ function svgEl(tag, attrs) {
 }
 
 function cloneItem(item) {
-  if (item.type === "hline") return { ...item };
+  if (item.type === "hline" || item.type === "text") return { ...item };
   return { ...item, points: item.points.map((p) => ({ ...p })) };
+}
+
+function textDisplayLines(text) {
+  return String(text || "").split("\n");
+}
+
+function estimateTextScreenBox(item) {
+  const x = drawTimeToX(item.time);
+  const y = drawPriceToY(item.price);
+  if (x == null || y == null) return null;
+  const lines = textDisplayLines(item.text);
+  const w = Math.max(24, ...lines.map((ln) => ln.length * TEXT_CHAR_W)) + 8;
+  const h = lines.length * TEXT_LINE_H + 4;
+  return { x, y, w, h };
+}
+
+function closeTextInput(commit) {
+  const edit = drawState.textEdit;
+  if (!edit || !drawTextInputEl) return;
+  drawTextInputEl.classList.add("hidden");
+  drawState.textEdit = null;
+
+  if (!commit) {
+    renderDrawings();
+    return;
+  }
+
+  const value = drawTextInputEl.value.trim();
+  if (!value) {
+    if (typeof t === "function") alert(t("draw.text.empty"));
+    renderDrawings();
+    return;
+  }
+
+  if (edit.itemId != null) {
+    const item = getItem(edit.itemId);
+    if (item?.type === "text") {
+      item.text = value;
+      item.time = edit.time;
+      item.price = edit.price;
+      drawState.selectedId = item.id;
+      notifyPracticeSave();
+    }
+  } else {
+    const id = drawState.nextId++;
+    drawState.items.push({
+      id,
+      type: "text",
+      time: edit.time,
+      price: edit.price,
+      text: value,
+    });
+    afterDrawComplete(id);
+    return;
+  }
+  renderDrawings();
+}
+
+function openTextInputAt(pt, { itemId = null, initial = "" } = {}) {
+  if (!drawTextInputEl || !drawChartEl) return;
+  const area = drawChartEl.closest(".chart-area");
+  if (!area) return;
+
+  drawState.textEdit = { itemId, time: pt.time, price: pt.price };
+  const rect = drawChartEl.getBoundingClientRect();
+  const areaRect = area.getBoundingClientRect();
+  drawTextInputEl.value = initial;
+  drawTextInputEl.placeholder =
+    typeof t === "function" ? t("draw.text.placeholder") : "输入文字…";
+  drawTextInputEl.classList.remove("hidden");
+  drawTextInputEl.style.left = `${rect.left - areaRect.left + pt.x}px`;
+  drawTextInputEl.style.top = `${rect.top - areaRect.top + pt.y - TEXT_FONT_SIZE}px`;
+  drawTextInputEl.focus();
+  drawTextInputEl.select();
+}
+
+function beginEditTextItem(item) {
+  const x = drawTimeToX(item.time);
+  const y = drawPriceToY(item.price);
+  if (x == null || y == null) return;
+  drawState.selectedId = item.id;
+  openTextInputAt(
+    { time: item.time, price: item.price, x, y },
+    { itemId: item.id, initial: item.text }
+  );
 }
 
 function getItem(id) {
@@ -173,6 +279,8 @@ function renderDrawings() {
     if (item.type === "hline") renderHLine(g, item, w, h, false);
     else if (item.type === "trend") renderTrend(g, item, w, h, false);
     else if (item.type === "fib") renderFib(g, item, w, false);
+    else if (item.type === "rect") renderRect(g, item, w, h, false);
+    else if (item.type === "text") renderText(g, item, false);
     drawOverlayEl.appendChild(g);
   }
 
@@ -182,6 +290,10 @@ function renderDrawings() {
       renderTrendSegment(g, drawState.draft.points[0], drawState.preview, w, h, true);
     } else if (drawState.draft.type === "fib" && drawState.draft.points.length >= 1 && drawState.preview) {
       renderFibShape(g, drawState.draft.points[0], drawState.preview, w, h, true);
+    } else if (drawState.draft.type === "rect" && drawState.draft.points.length >= 1) {
+      const p1 = drawState.draft.points[0];
+      const p2 = drawState.preview || p1;
+      renderRect(g, { id: -1, type: "rect", points: [p1, p2] }, w, h, true);
     }
     drawOverlayEl.appendChild(g);
   }
@@ -331,6 +443,118 @@ function renderFibShape(g, p1, p2, w, h, dashed) {
   });
 }
 
+function renderRectCornerHandles(g, points) {
+  points.forEach((p, i) => {
+    const x = drawTimeToX(p.time);
+    const y = drawPriceToY(p.price);
+    if (x == null || y == null) return;
+    g.appendChild(
+      svgEl("circle", {
+        cx: x,
+        cy: y,
+        r: HANDLE_R + 2,
+        fill: "#8fd4a8",
+        stroke: "#0f1115",
+        "stroke-width": 2,
+        class: "draw-handle",
+        "data-point": i,
+      })
+    );
+  });
+}
+
+function renderRect(g, item, w, h, draft) {
+  if (!item.points?.length) return;
+  const p1 = item.points[0];
+  const p2 = item.points[1] ?? item.points[0];
+  if (item.points.length >= 2 || draft) {
+    renderRectShape(g, p1, p2, w, h, !!draft);
+  }
+  const selected = item.id === drawState.selectedId;
+  if (selected || draft) {
+    const handlePoints =
+      draft && drawState.preview && item.points.length === 1
+        ? [p1, drawState.preview]
+        : item.points.length >= 2
+          ? item.points
+          : [p1];
+    renderRectCornerHandles(g, handlePoints);
+  }
+}
+
+function renderText(g, item, preview) {
+  const box = estimateTextScreenBox(item);
+  if (!box) return;
+  const selected = item.id === drawState.selectedId;
+  const lines = textDisplayLines(item.text);
+  if (!lines.length) return;
+
+  if (selected) {
+    g.appendChild(
+      svgEl("rect", {
+        class: "draw-text-halo",
+        x: box.x - 4,
+        y: box.y - TEXT_FONT_SIZE,
+        width: box.w,
+        height: box.h,
+        rx: 4,
+        fill: preview ? "rgba(230, 200, 122, 0.08)" : "rgba(230, 200, 122, 0.12)",
+        stroke: preview ? "#8b95a8" : "#e6c87a",
+        "stroke-width": 1,
+        "stroke-dasharray": preview ? "4 4" : "none",
+      })
+    );
+  }
+
+  lines.forEach((line, i) => {
+    const el = svgEl("text", {
+      class: "draw-text-label",
+      x: box.x,
+      y: box.y + i * TEXT_LINE_H,
+      fill: preview ? "#8b95a8" : selected ? "#f0d78c" : "#e6eaf2",
+      "font-size": TEXT_FONT_SIZE,
+      "font-weight": 600,
+    });
+    el.textContent = line;
+    g.appendChild(el);
+  });
+
+  if (selected) {
+    g.appendChild(
+      svgEl("circle", {
+        cx: box.x,
+        cy: box.y,
+        r: HANDLE_R,
+        fill: "#e6c87a",
+        stroke: "#0f1115",
+        "stroke-width": 1,
+        class: "draw-handle",
+      })
+    );
+  }
+}
+
+function renderRectShape(g, p1, p2, w, h, dashed) {
+  const b = drawRectBounds(p1, p2);
+  if (!b) return;
+  const rw = b.right - b.left;
+  const rh = b.bottom - b.top;
+  if (rw < 0.5 && rh < 0.5) return;
+  const dash = dashed ? "4 4" : "none";
+  g.appendChild(
+    svgEl("rect", {
+      x: b.left,
+      y: b.top,
+      width: rw,
+      height: rh,
+      fill: dashed ? "rgba(143, 212, 168, 0.12)" : "rgba(143, 212, 168, 0.18)",
+      stroke: dashed ? "#8fd4a8" : "#a8e6bc",
+      "stroke-width": dashed ? 1 : 1.5,
+      "stroke-dasharray": dash,
+    })
+  );
+}
+
 function hitTestItem(clientX, clientY) {
   const pt = drawClientToPoint(clientX, clientY);
   if (!pt) return null;
@@ -386,6 +610,59 @@ function hitTestItem(clientX, clientY) {
         }
       }
     }
+
+    if (item.type === "rect" && item.points?.length >= 2) {
+      const p1 = item.points[0];
+      const p2 = item.points[1];
+      for (let pi = 0; pi < 2; pi++) {
+        const px = drawTimeToX(item.points[pi].time);
+        const py = drawPriceToY(item.points[pi].price);
+        if (px != null && py != null && Math.hypot(pt.x - px, pt.y - py) < HIT_PX + 4) {
+          return { item, kind: "rect-point", pointIndex: pi };
+        }
+      }
+      const b = drawRectBounds(p1, p2);
+      if (b) {
+        const pad = HIT_PX;
+        const onEdge =
+          (pt.x >= b.left - pad &&
+            pt.x <= b.right + pad &&
+            pt.y >= b.top - pad &&
+            pt.y <= b.bottom + pad) &&
+          (Math.abs(pt.x - b.left) < pad ||
+            Math.abs(pt.x - b.right) < pad ||
+            Math.abs(pt.y - b.top) < pad ||
+            Math.abs(pt.y - b.bottom) < pad);
+        const inside =
+          pt.x > b.left + pad &&
+          pt.x < b.right - pad &&
+          pt.y > b.top + pad &&
+          pt.y < b.bottom - pad;
+        if (onEdge || inside) {
+          return { item, kind: "rect-box" };
+        }
+      }
+    }
+
+    if (item.type === "text") {
+      const box = estimateTextScreenBox(item);
+      if (box) {
+        const pad = HIT_PX;
+        if (
+          pt.x >= box.x - pad &&
+          pt.x <= box.x + box.w + pad &&
+          pt.y >= box.y - TEXT_FONT_SIZE - pad &&
+          pt.y <= box.y - TEXT_FONT_SIZE + box.h + pad
+        ) {
+          const hx = box.x;
+          const hy = box.y;
+          if (Math.hypot(pt.x - hx, pt.y - hy) < HIT_PX + 6) {
+            return { item, kind: "text-anchor" };
+          }
+          return { item, kind: "text-body" };
+        }
+      }
+    }
   }
   return null;
 }
@@ -438,6 +715,28 @@ function applyEditDrag(pt) {
         price: p.price + dp,
       }));
     }
+    return;
+  }
+
+  if (item.type === "rect" && item.points?.length >= 2) {
+    if (drag.kind === "rect-point") {
+      item.points[drag.pointIndex] = { time: pt.time, price: pt.price };
+    } else if (drag.kind === "rect-box") {
+      const dt = pt.time - drag.start.time;
+      const dp = pt.price - drag.start.price;
+      item.points = drag.snapshot.points.map((p) => ({
+        time: p.time + dt,
+        price: p.price + dp,
+      }));
+    }
+    return;
+  }
+
+  if (item.type === "text") {
+    if (drag.kind === "text-anchor" || drag.kind === "text-body") {
+      item.time = pt.time;
+      item.price = pt.price;
+    }
   }
 }
 
@@ -457,7 +756,33 @@ function finishDraft() {
 function afterDrawComplete(newId) {
   drawState.selectedId = newId ?? null;
   setDrawTool("cursor");
+  renderDrawings();
   notifyPracticeSave();
+}
+
+function finishRectDrag() {
+  if (!drawState.rectDragging) return;
+  drawState.rectDragging = false;
+  const draft = drawState.draft;
+  const pt = drawState.preview;
+  if (!draft || draft.type !== "rect" || draft.points.length !== 1 || !pt) {
+    drawState.draft = null;
+    drawState.preview = null;
+    renderDrawings();
+    return;
+  }
+  const p1 = draft.points[0];
+  const b = drawRectBounds(p1, pt);
+  if (!b || b.right - b.left < 4 || b.bottom - b.top < 4) {
+    drawState.draft = null;
+    drawState.preview = null;
+    renderDrawings();
+    return;
+  }
+  draft.points.push({ time: pt.time, price: pt.price });
+  const id = finishDraft();
+  if (id != null) afterDrawComplete(id);
+  else renderDrawings();
 }
 
 function placeDrawing(pt) {
@@ -473,6 +798,8 @@ function placeDrawing(pt) {
     afterDrawComplete(id);
     return;
   }
+
+  if (drawState.tool === "rect" || drawState.tool === "text") return;
 
   if (!drawState.draft) {
     drawState.draft = { type: drawState.tool, points: [{ time: pt.time, price: pt.price }] };
@@ -496,7 +823,12 @@ function onChartMouseDown(e) {
     if (hit) {
       e.preventDefault();
       e.stopPropagation();
-      startEdit(hit, pt);
+      if (hit.item.type === "text" && hit.kind === "text-body") {
+        drawState.selectedId = hit.item.id;
+        startEdit(hit, pt);
+      } else {
+        startEdit(hit, pt);
+      }
       renderDrawings();
     } else {
       drawState.selectedId = null;
@@ -507,6 +839,20 @@ function onChartMouseDown(e) {
 
   e.preventDefault();
   e.stopPropagation();
+
+  if (drawState.tool === "rect") {
+    drawState.draft = { type: "rect", points: [{ time: pt.time, price: pt.price }] };
+    drawState.preview = { time: pt.time, price: pt.price };
+    drawState.rectDragging = true;
+    renderDrawings();
+    return;
+  }
+
+  if (drawState.tool === "text") {
+    openTextInputAt(pt);
+    return;
+  }
+
   placeDrawing(pt);
   renderDrawings();
 }
@@ -535,16 +881,48 @@ function onChartMouseMove(e) {
 }
 
 function onChartMouseUp() {
+  if (drawState.rectDragging) finishRectDrag();
   if (drawState.editDrag) notifyPracticeSave();
   drawState.editDrag = null;
 }
 
+function onChartDblClick(e) {
+  if (drawState.tool !== "cursor" || !drawChartEl) return;
+  const hit = hitTestItem(e.clientX, e.clientY);
+  if (!hit || hit.item.type !== "text") return;
+  e.preventDefault();
+  e.stopPropagation();
+  beginEditTextItem(hit.item);
+}
+
 function onDrawKeyDown(e) {
+  if (drawState.textEdit && drawTextInputEl && !drawTextInputEl.classList.contains("hidden")) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      closeTextInput(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeTextInput(false);
+    }
+    return;
+  }
   if (e.key === "Escape") {
     drawState.draft = null;
     drawState.preview = null;
     drawState.editDrag = null;
+    drawState.rectDragging = false;
     renderDrawings();
+  }
+  if (
+    e.key === "Enter" &&
+    drawState.tool === "cursor" &&
+    drawState.selectedId != null
+  ) {
+    const item = getItem(drawState.selectedId);
+    if (item?.type === "text") {
+      e.preventDefault();
+      beginEditTextItem(item);
+    }
   }
   if ((e.key === "Delete" || e.key === "Backspace") && drawState.selectedId != null) {
     drawState.items = drawState.items.filter((it) => it.id !== drawState.selectedId);
@@ -555,10 +933,12 @@ function onDrawKeyDown(e) {
 }
 
 function setDrawTool(tool) {
+  closeTextInput(false);
   drawState.tool = tool;
   drawState.draft = null;
   drawState.preview = null;
   drawState.editDrag = null;
+  drawState.rectDragging = false;
   const area = drawChartEl?.closest(".chart-area");
   if (area) area.classList.toggle("draw-active", tool !== "cursor");
   document.querySelectorAll(".draw-toolbar [data-tool]").forEach((btn) => {
@@ -579,6 +959,7 @@ function clearDrawings() {
   drawState.preview = null;
   drawState.selectedId = null;
   drawState.editDrag = null;
+  drawState.rectDragging = false;
   renderDrawings();
   notifyPracticeSave();
 }
@@ -590,7 +971,7 @@ function notifyPracticeSave() {
 function exportDrawingsState() {
   return {
     items: drawState.items.map((it) => {
-      if (it.type === "hline") return { ...it };
+      if (it.type === "hline" || it.type === "text") return { ...it };
       return { ...it, points: it.points?.map((p) => ({ ...p })) ?? [] };
     }),
     nextId: drawState.nextId,
@@ -600,7 +981,7 @@ function exportDrawingsState() {
 function importDrawingsState(data) {
   if (!data) return;
   drawState.items = (data.items || []).map((it) => {
-    if (it.type === "hline") return { ...it };
+    if (it.type === "hline" || it.type === "text") return { ...it };
     return { ...it, points: it.points?.map((p) => ({ ...p })) ?? [] };
   });
   drawState.nextId = data.nextId ?? 1;
@@ -615,12 +996,31 @@ function initDrawings(chart, series, chartEl) {
   drawSeries = series;
   drawChartEl = chartEl;
   drawOverlayEl = document.getElementById("drawOverlay");
+  drawTextInputEl = document.getElementById("drawTextInput");
   if (!drawChartEl) return;
 
   drawChartEl.addEventListener("mousedown", onChartMouseDown, true);
+  drawChartEl.addEventListener("dblclick", onChartDblClick, true);
   window.addEventListener("mousemove", onChartMouseMove);
   window.addEventListener("mouseup", onChartMouseUp);
   window.addEventListener("keydown", onDrawKeyDown);
+
+  if (drawTextInputEl) {
+    drawTextInputEl.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        closeTextInput(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeTextInput(false);
+      }
+    });
+    drawTextInputEl.addEventListener("mousedown", (e) => e.stopPropagation());
+    drawTextInputEl.addEventListener("blur", () => {
+      if (drawState.textEdit) closeTextInput(true);
+    });
+  }
 
   document.querySelectorAll(".draw-toolbar [data-tool]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -641,5 +1041,10 @@ function isDrawToolActive() {
 }
 
 function isDrawEditing() {
-  return drawState.editDrag != null;
+  return (
+    drawState.editDrag != null ||
+    (drawState.textEdit != null &&
+      drawTextInputEl &&
+      !drawTextInputEl.classList.contains("hidden"))
+  );
 }

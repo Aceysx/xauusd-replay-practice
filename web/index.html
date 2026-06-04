@@ -22,6 +22,15 @@
       <div id="chartLoading" class="chart-loading hidden" aria-hidden="true">
         <div class="loading-box" data-i18n="loading.default">加载中…</div>
       </div>
+      <input
+        type="text"
+        id="drawTextInput"
+        class="draw-text-input hidden"
+        autocomplete="off"
+        spellcheck="false"
+        data-i18n-placeholder="draw.text.placeholder"
+        placeholder="输入文字…"
+      />
     </section>
     <div id="panelResize" class="panel-resize" data-i18n-title="panel.resize" title="上下拖动调整下单区高度"></div>
     <section class="stmt-panel" id="stmtPanel">
@@ -46,6 +55,8 @@
             <button type="button" data-tool="hline" title="─" data-i18n-title="draw.hline.title">─</button>
             <button type="button" data-tool="trend" title="╱" data-i18n-title="draw.trend.title">╱</button>
             <button type="button" data-tool="fib" title="Fib" data-i18n-title="draw.fib.title">Fib</button>
+            <button type="button" data-tool="rect" title="□" data-i18n-title="draw.rect.title">□</button>
+            <button type="button" data-tool="text" title="T" data-i18n-title="draw.text.title">T</button>
             <button type="button" data-tool="clear" title="×" data-i18n-title="draw.clear.title" class="draw-clear">×</button>
           </div>
           <span class="tb-sep"></span>
@@ -79,6 +90,6 @@
   <script>window.__API_BASE__ = "";</script>
   <script src="/i18n.js"></script>
   <script src="/drawings.js"></script>
-  <script src="/app.js?v=35"></script>
+  <script src="/app.js?v=39"></script>
 </body>
 </html>
