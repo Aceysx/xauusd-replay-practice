@@ -1,31 +1,42 @@
 """加载 config.yaml。"""
 
+import sys
 from functools import lru_cache
 from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[2]
+
+def app_root() -> Path:
+    """仓库根目录；PyInstaller 打包后为 _MEIPASS 资源目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parents[2]
+
+
+ROOT = app_root()
 CONFIG_PATH = ROOT / "config.yaml"
 
 
 @lru_cache(maxsize=1)
 def get_config() -> dict:
-    if not CONFIG_PATH.exists():
+    path = app_root() / "config.yaml"
+    if not path.exists():
         return {}
-    with CONFIG_PATH.open(encoding="utf-8") as f:
+    with path.open(encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
 def get_paths() -> dict:
     cfg = get_config()
     paths = cfg.get("paths", {})
-    root = ROOT / paths.get("root", ".")
+    root = app_root() / paths.get("root", ".")
     return {
         "root": root.resolve(),
         "statement": (root / paths.get("statement", "Statement.htm")).resolve(),
         "m5_dir": (root / paths.get("m5_dir", "Files")).resolve(),
         "m5_glob": paths.get("m5_glob", "xauusd_xauusdm_m5_{date}.csv"),
+        "m1_glob": paths.get("m1_glob", "xauusd_xauusdm_m1_{date}.csv"),
     }
 
 
@@ -67,6 +78,9 @@ def replay_defaults() -> dict:
         "bar_ms_per_candle_at_1x": base_ms,
         "default_timeframe": default_tf,
         "timeframes": timeframes,
+        "random_backtest_min_forward_days": int(
+            r.get("random_backtest_min_forward_days", 10)
+        ),
     }
 
 

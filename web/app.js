@@ -7,11 +7,21 @@ const LOTS = 0.01;
 const PRACTICE_STORAGE_KEY = "replay_practice_v1";
 
 let practiceSaveTimer = null;
+let refetchSeq = 0;
+let coarseRefetchTimer = null;
+let replayAdvanceBusy = false;
+const barsTfCache = new Map();
+const BARS_CACHE_MAX = 32;
+let replayTfPrefetchTimer = null;
+let prefetchAbortSeq = 0;
+let prefetchInFlight = 0;
+const PREFETCH_MAX_CONCURRENT = 1;
 const state = {
   config: null,
   allBars: [],
   cursor: 0,
   replayMode: false,
+  replayUntilTime: null,
   playing: false,
   speed: 1,
   speedIdx: 0,
@@ -30,7 +40,10 @@ const state = {
   drag: null,
   dragPrice: null,
   suppressRangeLoad: false,
+  restoringTfView: false,
   selectedOrderId: null,
+  /** 各周期独立视野：logicalFrom/To + barSpacing；跨周期首次进入用 timeFrom/To */
+  tfViews: {},
 };
 
 let chart, candleSeries, chartEl;
@@ -65,7 +78,9 @@ function refreshUiLocale() {
   if ($("btnPlay")) $("btnPlay").textContent = state.playing ? t("btn.pause") : t("btn.play");
   if ($("btnSpeed")) $("btnSpeed").textContent = `${state.speed}x`;
   if (!state.loading && $("btnJump")) $("btnJump").textContent = t("btn.jump");
-  if (state.chartReady && candleSeries) updateChart();
+  if (!state.loading && $("btnRandomStart"))
+    $("btnRandomStart").textContent = t("btn.randomStart");
+  if (state.chartReady && candleSeries) updateChart({ preserveView: true });
 }
 
 window.onLocaleChange = refreshUiLocale;
@@ -84,14 +99,18 @@ function barDateKey(ts) {
   return new Date(ts * 1000).toISOString().slice(0, 10);
 }
 
+/** 回放进度对应的时间落在哪根 K 线上（取 time <= ts 的最后一根） */
 function findBarIndexByTime(ts) {
   if (!state.allBars.length) return 0;
-  let lo = 0,
-    hi = state.allBars.length - 1;
+  if (ts <= state.allBars[0].time) return 0;
+  const last = state.allBars.length - 1;
+  if (ts >= state.allBars[last].time) return last;
+  let lo = 0;
+  let hi = last;
   while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (state.allBars[mid].time < ts) lo = mid + 1;
-    else hi = mid;
+    const mid = Math.ceil((lo + hi) / 2);
+    if (state.allBars[mid].time <= ts) lo = mid;
+    else hi = mid - 1;
   }
   return lo;
 }
@@ -117,7 +136,181 @@ function visibleBarsForChart() {
 }
 
 function syncPlaybackBarMs() {
-  state.barMs = state.config?.bar_ms_per_candle_at_1x || 300;
+  const tfMeta = state.config?.timeframes?.find((x) => x.id === state.timeframe);
+  state.barMs = tfMeta?.bar_ms_at_1x ?? state.config?.bar_ms_per_candle_at_1x ?? 300;
+}
+
+function timeframeBarSeconds(tf = state.timeframe) {
+  const found = state.config?.timeframes?.find((x) => x.id === tf);
+  if (found?.bar_seconds) return found.bar_seconds;
+  const fallback = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "3h": 10800,
+    "4h": 14400,
+    "1d": 86400,
+  };
+  return fallback[tf] || 300;
+}
+
+function isFineReplayTimeframe(tf = state.timeframe) {
+  return tf === "5m" || tf === "1m";
+}
+
+function replayUntilForTf(tf = state.timeframe) {
+  if (!state.replayMode || state.replayUntilTime == null) return "";
+  if (tf === "5m" || tf === "1m") return "";
+  return String(state.replayUntilTime);
+}
+
+function replayFetchParams() {
+  const until = replayUntilForTf();
+  return until ? { until } : {};
+}
+
+function barsCacheKey(tf, start, end) {
+  return `${tf}|${start}|${end}|${replayUntilForTf(tf)}`;
+}
+
+function barsCacheGet(tf, start, end) {
+  if (!start || !end) return null;
+  return barsTfCache.get(barsCacheKey(tf, start, end)) || null;
+}
+
+function barsCacheSet(tf, start, end, data) {
+  if (!start || !end || !data) return;
+  const key = barsCacheKey(tf, start, end);
+  if (barsTfCache.size >= BARS_CACHE_MAX) {
+    const first = barsTfCache.keys().next().value;
+    barsTfCache.delete(first);
+  }
+  barsTfCache.set(key, data);
+}
+
+/** 同一周期+区间只保留当前 until 的缓存，避免回放推进后占满缓存 */
+function pruneStaleUntilCache(tf, start, end) {
+  const prefix = `${tf}|${start}|${end}|`;
+  const keep = barsCacheKey(tf, start, end);
+  for (const key of [...barsTfCache.keys()]) {
+    if (key.startsWith(prefix) && key !== keep) barsTfCache.delete(key);
+  }
+}
+
+function clearBarsCache() {
+  barsTfCache.clear();
+}
+
+async function prefetchBarsTf(tf, start, end, seq = prefetchAbortSeq) {
+  if (!start || !end || tf === state.timeframe) return;
+  if (seq !== prefetchAbortSeq) return;
+  if (barsCacheGet(tf, start, end)) return;
+  if (prefetchInFlight >= PREFETCH_MAX_CONCURRENT) return;
+  prefetchInFlight += 1;
+  try {
+    if (seq !== prefetchAbortSeq) return;
+    const until = replayUntilForTf(tf);
+    const q = { start, end, tf, ...(until ? { until } : {}) };
+    const res = await fetch(`${apiUrl("/api/bars")}?${new URLSearchParams(q)}`);
+    if (seq !== prefetchAbortSeq || !res.ok) return;
+    const data = await res.json();
+    if (data.bars?.length) {
+      pruneStaleUntilCache(tf, start, end);
+      barsCacheSet(tf, start, end, data);
+    }
+  } catch {
+    /* 后台预取，忽略失败 */
+  } finally {
+    prefetchInFlight = Math.max(0, prefetchInFlight - 1);
+  }
+}
+
+async function prefetchOtherTimeframes(start, end, activeTf = state.timeframe) {
+  if (!start || !end) return;
+  const seq = prefetchAbortSeq;
+  for (const tf of state.config?.timeframes || []) {
+    if (tf.id === activeTf) continue;
+    if (seq !== prefetchAbortSeq) return;
+    await prefetchBarsTf(tf.id, start, end, seq);
+  }
+}
+
+function scheduleReplayTfPrefetch() {
+  if (!state.replayMode || !state.loadedStart || !state.loadedEnd) return;
+  // 播放中不预取，避免占满服务端导致切周期/加载卡住
+  if (state.playing) return;
+  clearTimeout(replayTfPrefetchTimer);
+  replayTfPrefetchTimer = setTimeout(() => {
+    void prefetchOtherTimeframes(state.loadedStart, state.loadedEnd, state.timeframe);
+  }, 600);
+}
+
+/** 回放已揭示到的最后时刻（任意周期播放/步进才更新，切周期不变） */
+function recordReplayProgress(time) {
+  if (!state.replayMode || time == null) return;
+  if (state.replayUntilTime == null || time > state.replayUntilTime) {
+    state.replayUntilTime = time;
+    scheduleReplayTfPrefetch();
+  }
+}
+
+function replayProgressBarIndex() {
+  if (!state.replayMode || state.replayUntilTime == null || !state.allBars.length) return 0;
+  return findBarIndexByTime(state.replayUntilTime);
+}
+
+function isCoarseReplayTimeframe(tf = state.timeframe) {
+  return state.replayMode && !isFineReplayTimeframe(tf);
+}
+
+/** 大周期回放前进一步：对齐到下一根 K 线开盘时刻（如 1h 整点）并刷新 OHLC */
+async function advanceReplayForward(opts = {}) {
+  if (replayAdvanceBusy) return false;
+  if (!state.allBars.length || state.cursor >= state.allBars.length - 1) return false;
+
+  const nextIdx = state.cursor + 1;
+  const nextBar = state.allBars[nextIdx];
+  if (!nextBar) return false;
+
+  if (isCoarseReplayTimeframe()) {
+    clearTimeout(coarseRefetchTimer);
+    coarseRefetchTimer = null;
+    recordReplayProgress(nextBar.time);
+    state.cursor = nextIdx;
+    $("playTime").textContent = fmtTime(nextBar.time);
+    updateChart({
+      preserveView: opts.preserveView !== false,
+      ensureVisible: !!opts.ensureVisible,
+      forceSetData: true,
+    });
+    checkPositionOnBar(nextBar);
+    scheduleSavePracticeState();
+
+    // 播放时不阻塞 tick 等网络；步进时仍等待以保证 OHLC 准确
+    if (state.playing) {
+      void refetchLoadedRange(nextBar.time).then(() => {
+        if (state.cursor < nextIdx) return;
+        updateChart({ preserveView: true, forceSetData: true });
+      });
+    } else {
+      replayAdvanceBusy = true;
+      try {
+        await refetchLoadedRange(nextBar.time);
+        updateChart({ preserveView: true, forceSetData: true });
+      } finally {
+        replayAdvanceBusy = false;
+      }
+    }
+    return true;
+  }
+
+  setCursor(nextIdx, {
+    preserveView: opts.preserveView !== false,
+    ensureVisible: !!opts.ensureVisible,
+  });
+  return true;
 }
 
 function updateTimeframeBarActive() {
@@ -158,21 +351,34 @@ function setupTimeframeBar() {
 async function switchTimeframe(tf) {
   if (tf === state.timeframe) return;
   pause();
-  const cursorTime = state.allBars[state.cursor]?.time ?? null;
+  prefetchAbortSeq += 1;
+  clearTimeout(replayTfPrefetchTimer);
+  replayTfPrefetchTimer = null;
+  captureTimeframeView(state.timeframe);
+  refetchSeq += 1;
+  clearTimeout(coarseRefetchTimer);
+  coarseRefetchTimer = null;
   const prevTf = state.timeframe;
+  const viewTime = state.allBars[state.cursor]?.time ?? null;
   state.timeframe = tf;
   syncPlaybackBarMs();
   updateTimeframeBarActive();
-  setUiLoading(true, "loading.timeframe");
+  const rangeStart = state.loadedStart;
+  const rangeEnd = state.loadedEnd;
+  let data =
+    rangeStart && rangeEnd ? barsCacheGet(tf, rangeStart, rangeEnd) : null;
+  const fromCache = !!data;
+  if (!fromCache) setUiLoading(true, "loading.timeframe");
   try {
-    let data;
-    if (state.loadedStart && state.loadedEnd) {
-      data = await fetchBarsQuery({ start: state.loadedStart, end: state.loadedEnd });
-    } else {
-      data = await fetchBarsQuery({
-        days: String(state.config.initial_trading_days || 30),
-        end: state.config.last_date,
-      });
+    if (!data) {
+      if (rangeStart && rangeEnd) {
+        data = await fetchBarsQuery({ start: rangeStart, end: rangeEnd });
+      } else {
+        data = await fetchBarsQuery({
+          days: String(state.config.initial_trading_days || 30),
+          end: state.config.last_date,
+        });
+      }
     }
     if (!data.bars?.length) {
       state.timeframe = prevTf;
@@ -182,15 +388,32 @@ async function switchTimeframe(tf) {
       return;
     }
     applyBarsPayload(data, { replace: true });
+    state._chartSeriesLen = 0;
+    const viewToRestore = resolveTimeframeView(tf, prevTf);
     let idx = 0;
-    if (cursorTime != null) idx = findBarIndexByTime(cursorTime);
-    else if (state.allBars.length) idx = state.allBars.length - 1;
+    if (state.replayMode) {
+      idx = replayProgressBarIndex();
+    } else if (viewTime != null) {
+      idx = findBarIndexByTime(viewTime);
+    } else if (state.allBars.length) {
+      idx = state.allBars.length - 1;
+    }
     setCursor(idx, {
       skipLoad: true,
       skipBarCheck: !state.position,
-      scrollToCursor: true,
+      scrollToCursor: false,
+      preserveView: false,
+      fixStaleRange: false,
+      forceSetData: true,
+      skipReplayProgress: true,
+      restoreTimeView: viewToRestore,
     });
+    scheduleChartViewSync();
     savePracticeStateNow();
+    // 切换完成后再低优先级预取其它周期
+    setTimeout(() => {
+      if (!state.loading) void prefetchOtherTimeframes(state.loadedStart, state.loadedEnd, tf);
+    }, 300);
   } catch (e) {
     state.timeframe = prevTf;
     syncPlaybackBarMs();
@@ -227,6 +450,7 @@ function setUiLoading(loading, messageKey = "loading.default") {
     "btnPlay",
     "btnSpeed",
     "btnJump",
+    "btnRandomStart",
     "jumpDate",
   ].forEach((id) => {
     const el = $(id);
@@ -236,6 +460,9 @@ function setUiLoading(loading, messageKey = "loading.default") {
   if ($("btnJump") && messageKey === "loading.jump") {
     $("btnJump").textContent = loading ? t("loading.jump") : t("btn.jump");
   }
+  if ($("btnRandomStart") && messageKey === "loading.random") {
+    $("btnRandomStart").textContent = loading ? t("loading.random") : t("btn.randomStart");
+  }
 }
 
 function setVisibleLogicalRange(from, to) {
@@ -244,6 +471,116 @@ function setVisibleLogicalRange(from, to) {
   requestAnimationFrame(() => {
     state.suppressRangeLoad = false;
   });
+}
+
+function chartVisibleTimeRange() {
+  if (!chart) return null;
+  const range = chart.timeScale().getVisibleRange();
+  if (!range || range.from == null || range.to == null) return null;
+  const from = typeof range.from === "number" ? range.from : null;
+  const to = typeof range.to === "number" ? range.to : null;
+  if (from == null || to == null || to <= from) return null;
+  return { from, to };
+}
+
+function snapshotChartView() {
+  if (!state.chartReady || !chart) return null;
+  const logical = chart.timeScale().getVisibleLogicalRange();
+  if (!logical || logical.to <= logical.from) return null;
+  const view = {
+    logicalFrom: logical.from,
+    logicalTo: logical.to,
+    barSpacing: chart.timeScale().options().barSpacing,
+  };
+  const time = chartVisibleTimeRange();
+  if (time) {
+    view.timeFrom = time.from;
+    view.timeTo = time.to;
+  }
+  return view;
+}
+
+function applyTimeframeView(view) {
+  if (!state.chartReady || !chart || !view) return false;
+  try {
+    if (view.barSpacing != null && Number.isFinite(view.barSpacing)) {
+      chart.timeScale().applyOptions({ barSpacing: view.barSpacing });
+    }
+    if (
+      view.logicalFrom != null &&
+      view.logicalTo != null &&
+      view.logicalTo > view.logicalFrom
+    ) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: view.logicalFrom,
+        to: view.logicalTo,
+      });
+      return true;
+    }
+    if (view.timeFrom != null && view.timeTo != null && view.timeTo > view.timeFrom) {
+      chart.timeScale().setVisibleRange({ from: view.timeFrom, to: view.timeTo });
+      return true;
+    }
+    // 兼容旧存档 { from, to }
+    if (view.from != null && view.to != null && view.to > view.from) {
+      chart.timeScale().setVisibleRange({ from: view.from, to: view.to });
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+/** setData 后 chart 会异步重置视野，需连续几帧重试 */
+function scheduleApplyTimeframeView(view) {
+  if (!view) return;
+  state.suppressRangeLoad = true;
+  state.restoringTfView = true;
+  const apply = () => applyTimeframeView(view);
+  apply();
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(() => {
+      apply();
+      state.suppressRangeLoad = false;
+      state.restoringTfView = false;
+      updateRrOverlay();
+      if (typeof renderDrawings === "function" && !state.playing) renderDrawings();
+    });
+  });
+}
+
+function captureTimeframeView(tf = state.timeframe) {
+  const view = snapshotChartView();
+  if (!view) return;
+  state.tfViews[tf] = view;
+}
+
+/** 回到某周期用其存档；首次进入则沿用上一周期的时间窗口 */
+function resolveTimeframeView(tf, prevTf) {
+  const saved = state.tfViews[tf];
+  if (saved) return { ...saved };
+  const transfer = prevTf ? state.tfViews[prevTf] : null;
+  if (!transfer) return null;
+  if (transfer.timeFrom != null && transfer.timeTo != null) {
+    return {
+      timeFrom: transfer.timeFrom,
+      timeTo: transfer.timeTo,
+      barSpacing: transfer.barSpacing,
+    };
+  }
+  if (transfer.from != null && transfer.to != null) {
+    return { timeFrom: transfer.from, timeTo: transfer.to, barSpacing: transfer.barSpacing };
+  }
+  return null;
+}
+
+function restoreTimeframeView(tf = state.timeframe) {
+  const saved = state.tfViews[tf];
+  if (!saved) return false;
+  scheduleApplyTimeframeView(saved);
+  return true;
 }
 
 const CHART_VIEW_BARS = 150;
@@ -280,6 +617,46 @@ function centerLogicalRange(centerIdx, spanBars = CHART_VIEW_BARS) {
 function scrollChartToCursor() {
   if (!state.chartReady || !visibleBarsForChart().length) return;
   centerLogicalRange(cursorLogicalIndex());
+}
+
+/** 切换周期/替换数据后：可见区间超出 series 长度会导致画线坐标失效 */
+function fixVisibleRangeIfStale() {
+  if (!state.chartReady) return;
+  const seriesN = visibleBarsForChart().length;
+  if (!seriesN) return;
+  const range = chart.timeScale().getVisibleLogicalRange();
+  if (!range) {
+    scrollChartToCursor();
+    return;
+  }
+  // 回放时 allBars 含未揭示 K 线，允许视口延伸到右侧以便在未来区域绘图
+  const allowMaxLi = state.replayMode
+    ? Math.max(seriesN - 1, state.allBars.length - 1)
+    : seriesN - 1;
+  if (range.from >= state.allBars.length) {
+    scrollChartToCursor();
+    return;
+  }
+  if (range.to > allowMaxLi + 1) {
+    setVisibleLogicalRange(
+      Math.max(0, range.from),
+      Math.max(range.from + 2, Math.min(range.to, allowMaxLi + 1))
+    );
+  }
+}
+
+/** 原样恢复缩放/平移（播放时保持用户当前视野，不随光标 clamp） */
+function restoreVisibleLogicalRange(saved) {
+  if (!saved || !Number.isFinite(saved.from) || !Number.isFinite(saved.to)) return;
+  if (saved.to <= saved.from) return;
+  setVisibleLogicalRange(saved.from, saved.to);
+}
+
+function scheduleChartViewSync() {
+  requestAnimationFrame(() => {
+    if (typeof renderDrawings === "function") renderDrawings();
+    updateRrOverlay();
+  });
 }
 
 function ensureCursorInView() {
@@ -364,42 +741,95 @@ function buildChartMarkers() {
 function updateChart(opts = {}) {
   if (!state.chartReady || !candleSeries) return;
   const bars = visibleBarsForChart();
+  const savedRange =
+    opts.preserveView && chart ? chart.timeScale().getVisibleLogicalRange() : null;
+
   if (!bars.length) {
     candleSeries.setData([]);
     candleSeries.setMarkers([]);
+    state._chartSeriesLen = 0;
     return;
   }
-  candleSeries.setData(bars);
+
+  const lenChanged = state._chartSeriesLen !== bars.length;
+  const replayStep =
+    state.replayMode &&
+    lenChanged &&
+    bars.length === state._chartSeriesLen + 1 &&
+    !opts.forceSetData;
+
+  if (replayStep && bars.length > 0) {
+    candleSeries.update(bars[bars.length - 1]);
+    state._chartSeriesLen = bars.length;
+  } else if (lenChanged || opts.forceSetData) {
+    candleSeries.setData(bars);
+    state._chartSeriesLen = bars.length;
+  } else {
+    candleSeries.update(bars[bars.length - 1]);
+  }
   candleSeries.setMarkers(buildChartMarkers());
   refreshPositionLines();
 
-  if (opts.scrollToCursor) {
+  if (opts.fixStaleRange) fixVisibleRangeIfStale();
+
+  if (opts.restoreTimeView) {
+    scheduleApplyTimeframeView(opts.restoreTimeView);
+  } else if (opts.scrollToCursor) {
     scrollChartToCursor();
-  } else if (opts.ensureVisible) {
-    ensureCursorInView();
+  } else if (!replayStep && opts.preserveView && savedRange) {
+    const shift = opts.logicalRangeShift || 0;
+    restoreVisibleLogicalRange({
+      from: savedRange.from + shift,
+      to: savedRange.to + shift,
+    });
   }
+  if (opts.ensureVisible) ensureCursorInView();
   updateRrOverlay();
-  if (typeof renderDrawings === "function") renderDrawings();
+  if (typeof renderDrawings === "function" && !state.playing) renderDrawings();
 }
 
 function setCursor(idx, opts = {}) {
   const max = Math.max(0, state.allBars.length - 1);
+  const prevCursor = state.cursor;
   state.cursor = Math.max(0, Math.min(idx, max));
   const bar = currentBar();
+  if (!opts.skipReplayProgress && state.replayMode && bar) {
+    if (state.cursor > prevCursor) {
+      recordReplayProgress(bar.time);
+    } else if (state.cursor < prevCursor) {
+      state.replayUntilTime = bar.time;
+    }
+  }
   $("playTime").textContent = bar ? fmtTime(bar.time) : "—";
+  const scrollToCursor = !!opts.scrollToCursor;
   updateChart({
-    scrollToCursor: !!opts.scrollToCursor,
+    scrollToCursor,
     ensureVisible: !!opts.ensureVisible,
+    preserveView: opts.preserveView ?? !scrollToCursor,
+    fixStaleRange: !!opts.fixStaleRange,
+    forceSetData: !!opts.forceSetData,
+    logicalRangeShift: opts.logicalRangeShift || 0,
   });
   if (!opts.skipBarCheck) checkPositionOnBar(bar);
   if (!opts.skipLoad && state.cursor <= LOAD_THRESHOLD) loadMoreBefore();
   if (!opts.skipSave) scheduleSavePracticeState();
 }
 
-function goToLatest() {
+async function goToLatest() {
   pause();
+  const needsRefetch =
+    state.replayUntilTime != null &&
+    isCoarseReplayTimeframe() &&
+    state.loadedStart &&
+    state.loadedEnd;
   state.replayMode = false;
-  setCursor(state.allBars.length - 1, { skipLoad: true, scrollToCursor: true });
+  state.replayUntilTime = null;
+  if (needsRefetch) await refetchLoadedRange();
+  setCursor(state.allBars.length - 1, {
+    skipLoad: true,
+    scrollToCursor: true,
+    skipReplayProgress: true,
+  });
 }
 
 function removeLine(key) {
@@ -442,11 +872,10 @@ function tradeEndTime(trade) {
 
 function rrBoxHorizontal(trade) {
   if (!chart || !state.chartReady) return null;
-  const ts = chart.timeScale();
   const startTime = trade.open_ts;
   const endTime = tradeEndTime(trade);
-  let left = ts.timeToCoordinate(startTime);
-  let right = ts.timeToCoordinate(endTime);
+  let left = chartTimeToX(startTime);
+  let right = chartTimeToX(endTime);
   if (left == null && right == null) return null;
   if (left == null) left = right - 8;
   if (right == null) right = left + 8;
@@ -849,6 +1278,57 @@ function priceToY(price) {
   return y != null ? y : null;
 }
 
+function interpolateChartTimeToX(t0, x0, t1, x1, time) {
+  if (x0 == null || x1 == null || !Number.isFinite(x0) || !Number.isFinite(x1)) return null;
+  if (t1 === t0) return x0;
+  return x0 + ((time - t0) / (t1 - t0)) * (x1 - x0);
+}
+
+/** 时间 → 屏幕 X（精确 bar 用 API，否则在相邻 K 线间插值） */
+function chartTimeToX(time) {
+  if (!chart || time == null) return null;
+  const ts = chart.timeScale();
+  const direct = ts.timeToCoordinate(time);
+  if (direct != null && Number.isFinite(direct)) return direct;
+
+  const series = visibleBarsForChart();
+  const n = series.length;
+  if (!n) return null;
+  const xAt = (t) => ts.timeToCoordinate(t);
+  if (n === 1) return xAt(series[0].time);
+
+  const first = series[0].time;
+  const last = series[n - 1].time;
+  if (time <= first) {
+    return interpolateChartTimeToX(first, xAt(first), series[1].time, xAt(series[1].time), time);
+  }
+  if (time >= last) {
+    return interpolateChartTimeToX(
+      series[n - 2].time,
+      xAt(series[n - 2].time),
+      last,
+      xAt(last),
+      time
+    );
+  }
+  let lo = 0;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (series[mid].time <= time) lo = mid;
+    else hi = mid - 1;
+  }
+  if (series[lo].time === time) return xAt(time);
+  const hiIdx = lo + 1;
+  return interpolateChartTimeToX(
+    series[lo].time,
+    xAt(series[lo].time),
+    series[hiIdx].time,
+    xAt(series[hiIdx].time),
+    time
+  );
+}
+
 function nearestDragTarget(clientY) {
   const pos = state.position;
   if (!pos) return null;
@@ -1024,7 +1504,10 @@ function initChart() {
     if (typeof renderDrawings === "function") renderDrawings();
   }).observe(chartEl);
 
-  initDrawings(chart, candleSeries, chartEl);
+  initDrawings(chart, candleSeries, chartEl, {
+    onToolChange: (tool) => lockChartPan(tool !== "cursor"),
+    getSeriesBars: () => visibleBarsForChart(),
+  });
 
   chart.subscribeClick((param) => {
     if (!param.time || state.drag) return;
@@ -1039,24 +1522,43 @@ function initChart() {
   });
 
   let rangeTimer = null;
+  let tfViewSaveTimer = null;
   chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
     updateRrOverlay();
-    if (typeof renderDrawings === "function") renderDrawings();
+    if (typeof renderDrawings === "function" && !state.playing) renderDrawings();
     if (!range || state.suppressRangeLoad || state.loading || !state.hasMoreBefore) return;
     if (range.from > 80) return;
     clearTimeout(rangeTimer);
     rangeTimer = setTimeout(() => loadMoreBefore(), 250);
+  });
+  chart.timeScale().subscribeVisibleTimeRangeChange(() => {
+    if (state.suppressRangeLoad || state.restoringTfView || !state.chartReady) return;
+    clearTimeout(tfViewSaveTimer);
+    tfViewSaveTimer = setTimeout(() => {
+      captureTimeframeView(state.timeframe);
+      scheduleSavePracticeState();
+    }, 300);
   });
 
   setupDrag();
 }
 
 async function fetchBarsQuery(params) {
-  const q = { ...params, tf: state.timeframe };
+  const q = { ...params, tf: state.timeframe, ...replayFetchParams() };
+  const start = q.start;
+  const end = q.end;
+  if (start && end) {
+    const hit = barsCacheGet(state.timeframe, start, end);
+    if (hit) return hit;
+  }
   const res = await fetch(`${apiUrl("/api/bars")}?${new URLSearchParams(q)}`);
   if (!res.ok) throw new Error(t("error.loadBars"));
   const data = await res.json();
   if (!data.bars) throw new Error(t("error.restartServer"));
+  if (start && end) {
+    pruneStaleUntilCache(state.timeframe, start, end);
+    barsCacheSet(state.timeframe, start, end, data);
+  }
   return data;
 }
 
@@ -1066,6 +1568,7 @@ function applyBarsPayload(data, { replace = false } = {}) {
     state.allBars = data.bars || [];
     state.loadedStart = data.start;
     state.loadedEnd = data.end;
+    state._chartSeriesLen = 0;
   } else {
     mergeBars(data.bars || []);
     state.loadedStart = data.start;
@@ -1073,6 +1576,31 @@ function applyBarsPayload(data, { replace = false } = {}) {
   state.hasMoreBefore = inferHasMoreBefore(data);
   if (data.timeframe) state.timeframe = data.timeframe;
   return state.allBars.length - (replace ? 0 : prevLen);
+}
+
+async function refetchLoadedRange(anchorTime = null) {
+  if (!state.loadedStart || !state.loadedEnd) return;
+  const seq = ++refetchSeq;
+  const anchor = anchorTime ?? state.allBars[state.cursor]?.time ?? null;
+  const cacheKey = barsCacheKey(
+    state.timeframe,
+    state.loadedStart,
+    state.loadedEnd
+  );
+  barsTfCache.delete(cacheKey);
+  const data = await fetchBarsQuery({
+    start: state.loadedStart,
+    end: state.loadedEnd,
+  });
+  if (seq !== refetchSeq) return;
+  applyBarsPayload(data, { replace: true });
+  if (anchor != null) {
+    const idx = findBarIndexByTime(anchor);
+    const max = Math.max(0, state.allBars.length - 1);
+    state.cursor = Math.max(0, Math.min(idx, max));
+  }
+  state._chartSeriesLen = 0;
+  updateChart({ preserveView: true, forceSetData: true });
 }
 
 function buildPracticeSnapshot() {
@@ -1092,12 +1620,17 @@ function buildPracticeSnapshot() {
           openTime: state.position.openTime,
         }
       : null,
-    cursorTime: state.allBars[state.cursor]?.time ?? null,
+    cursorTime:
+      state.replayMode && state.replayUntilTime != null
+        ? state.replayUntilTime
+        : state.allBars[state.cursor]?.time ?? null,
     timeframe: state.timeframe,
     replayMode: state.replayMode,
+    replayUntilTime: state.replayUntilTime,
     jumpDate: $("jumpDate")?.value || null,
     loadedStart: state.loadedStart,
     loadedEnd: state.loadedEnd,
+    tfViews: state.tfViews,
     drawings: typeof exportDrawingsState === "function" ? exportDrawingsState() : null,
   };
 }
@@ -1138,6 +1671,9 @@ function findBarIndexExact(ts) {
 
 function applyPracticeState(data) {
   if (!data) return;
+  if (data.tfViews && typeof data.tfViews === "object") {
+    state.tfViews = data.tfViews;
+  }
   state.orderRecords = Array.isArray(data.orderRecords) ? data.orderRecords : [];
   state.nextOrderId =
     typeof data.nextOrderId === "number"
@@ -1151,9 +1687,18 @@ function applyPracticeState(data) {
   refreshPositionLines();
 
   state.replayMode = !!data.replayMode;
+  if (data.replayUntilTime != null) {
+    state.replayUntilTime = data.replayUntilTime;
+  } else if (state.replayMode && data.cursorTime != null) {
+    state.replayUntilTime = data.cursorTime;
+  } else if (!state.replayMode) {
+    state.replayUntilTime = null;
+  }
 
   let idx = 0;
-  if (data.cursorTime != null && state.allBars.length) {
+  if (state.replayMode && state.replayUntilTime != null && state.allBars.length) {
+    idx = replayProgressBarIndex();
+  } else if (data.cursorTime != null && state.allBars.length) {
     idx = findBarIndexExact(data.cursorTime);
   } else if (data.replayMode && data.jumpDate) {
     idx = findFirstBarOnDate(data.jumpDate);
@@ -1167,12 +1712,14 @@ function applyPracticeState(data) {
     skipLoad: true,
     skipBarCheck: false,
     skipSave: true,
-    scrollToCursor: true,
+    scrollToCursor: false,
+    skipReplayProgress: true,
+    preserveView: true,
   });
   requestAnimationFrame(() => {
-    scrollChartToCursor();
+    restoreTimeframeView(state.timeframe);
     updateRrOverlay();
-    updateChart();
+    updateChart({ preserveView: true });
   });
 }
 
@@ -1213,6 +1760,20 @@ async function loadBarsFromSnapshot(saved) {
   return fetchBarsQuery({ days: String(days), end });
 }
 
+function beginNewPracticeSession() {
+  state.orderRecords = [];
+  state.nextOrderId = 1;
+  state.position = null;
+  state.selectedOrderId = null;
+  state.drag = null;
+  state.tfViews = {};
+  clearPositionLines();
+  if (typeof clearDrawings === "function") clearDrawings();
+  renderStatement();
+  renderSessionStats();
+  updatePositionInfoPanel();
+}
+
 function resetPracticeData() {
   if (
     !confirm(t("confirm.reset"))
@@ -1220,20 +1781,14 @@ function resetPracticeData() {
     return;
   }
   localStorage.removeItem(PRACTICE_STORAGE_KEY);
-  state.orderRecords = [];
-  state.nextOrderId = 1;
-  state.position = null;
-  state.selectedOrderId = null;
+  beginNewPracticeSession();
   state.replayMode = false;
-  state.drag = null;
-  clearPositionLines();
-  if (typeof clearDrawings === "function") clearDrawings();
-  renderStatement();
   goToLatest();
   savePracticeStateNow();
 }
 
 async function loadInitialBars() {
+  clearBarsCache();
   const data = await fetchBarsQuery({
     days: String(state.config.initial_trading_days || 30),
     end: state.config.last_date,
@@ -1261,7 +1816,13 @@ async function loadMoreBefore() {
       state.hasMoreBefore = false;
       return;
     }
-    setCursor(oldCursor + added, { skipLoad: true, skipBarCheck: true });
+    setCursor(oldCursor + added, {
+      skipLoad: true,
+      skipBarCheck: true,
+      preserveView: true,
+      logicalRangeShift: added,
+      skipReplayProgress: true,
+    });
     if (state.cursor <= LOAD_THRESHOLD && state.hasMoreBefore) await loadMoreBefore();
   } finally {
     setUiLoading(false);
@@ -1294,16 +1855,17 @@ async function loadBarsForBacktestFrom(dateStr) {
   };
 }
 
-async function jumpToBacktestDate() {
+async function jumpToBacktestDate(options = {}) {
   const dateStr = $("jumpDate").value;
   if (!dateStr) {
     alert(t("alert.pickDate"));
     return;
   }
   pause();
-  closePositionSilent();
-  setUiLoading(true, "loading.jump");
+  if (!options.skipClosePosition) closePositionSilent();
+  setUiLoading(true, options.loadingKey || "loading.jump");
   try {
+    clearBarsCache();
     const data = await loadBarsForBacktestFrom(dateStr);
     if (!data.bars?.length) {
       alert(t("alert.noBars"));
@@ -1313,7 +1875,14 @@ async function jumpToBacktestDate() {
 
     const idx = findFirstBarOnDate(dateStr);
     state.replayMode = true;
-    setCursor(idx, { skipLoad: true, skipBarCheck: true, scrollToCursor: false });
+    state.replayUntilTime = state.allBars[idx]?.time ?? null;
+    scheduleReplayTfPrefetch();
+    setCursor(idx, {
+      skipLoad: true,
+      skipBarCheck: true,
+      scrollToCursor: false,
+      skipReplayProgress: true,
+    });
     requestAnimationFrame(() => {
       scrollChartToCursor();
       requestAnimationFrame(() => {
@@ -1327,13 +1896,34 @@ async function jumpToBacktestDate() {
   }
 }
 
+async function startRandomBacktest() {
+  pause();
+  beginNewPracticeSession();
+  try {
+    const minFwd = state.config?.random_backtest_min_forward_days ?? 10;
+    const res = await fetch(
+      apiUrl(`/api/random_replay_start?min_forward_days=${encodeURIComponent(minFwd)}`)
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      alert(t("alert.randomFailed", { msg: data.error || res.statusText }));
+      return;
+    }
+    if ($("jumpDate")) $("jumpDate").value = data.date;
+    await jumpToBacktestDate({ skipClosePosition: true, loadingKey: "loading.random" });
+  } catch (e) {
+    alert(t("alert.randomFailed", { msg: e.message }));
+  }
+}
+
 function stepBar(delta) {
   pause();
+  if (delta > 0) {
+    void advanceReplayForward({ ensureVisible: true });
+    return;
+  }
   const next = state.cursor + delta;
   if (next < 0) return;
-  const max = state.allBars.length - 1;
-  if (next > max) return;
-  if (state.replayMode && delta > 0 && next > max) return;
   setCursor(next, { ensureVisible: true });
 }
 
@@ -1374,7 +1964,7 @@ function appendOrderRecord(exitPx, reason, bar) {
   state.selectedOrderId = pos.orderId;
   renderStatement();
   updateRrOverlay();
-  updateChart();
+  updateChart({ preserveView: true });
   savePracticeStateNow();
 }
 
@@ -1384,7 +1974,7 @@ function closePositionSilent() {
   clearPositionLines();
   updateRrOverlay();
   updatePositionInfoPanel();
-  updateChart();
+  updateChart({ preserveView: true });
 }
 
 function closePosition(exitPx, reason, bar) {
@@ -1419,7 +2009,7 @@ function openPosition(direction) {
   };
   refreshPositionLines();
   updatePositionInfoPanel();
-  updateChart();
+  updateChart({ preserveView: true });
   savePracticeStateNow();
 }
 
@@ -1447,23 +2037,42 @@ function play() {
 function pause() {
   state.playing = false;
   $("btnPlay").textContent = t("btn.play");
+  if (typeof renderDrawings === "function") renderDrawings();
+  scheduleReplayTfPrefetch();
 }
 
-function tick(now) {
+async function tick(now) {
   if (!state.playing) return;
+  if (replayAdvanceBusy) {
+    requestAnimationFrame(tick);
+    return;
+  }
   if (now - state.lastFrame >= state.barMs / state.speed) {
     state.lastFrame = now;
     if (state.cursor >= state.allBars.length - 1) {
       pause();
       if (state.replayMode) {
+        const needsRefetch =
+          state.replayUntilTime != null &&
+          isCoarseReplayTimeframe() &&
+          state.loadedStart &&
+          state.loadedEnd;
         state.replayMode = false;
-        updateChart();
+        state.replayUntilTime = null;
+        state._chartSeriesLen = 0;
+        if (needsRefetch) {
+          refetchLoadedRange().then(() =>
+            updateChart({ preserveView: true, forceSetData: true })
+          );
+        } else {
+          updateChart({ preserveView: true, forceSetData: true });
+        }
       }
       return;
     }
-    setCursor(state.cursor + 1, { ensureVisible: true });
+    await advanceReplayForward({ preserveView: true });
   }
-  requestAnimationFrame(tick);
+  if (state.playing) requestAnimationFrame(tick);
 }
 
 function computeSessionStats() {
@@ -1649,6 +2258,7 @@ function setupPanelResize() {
 function isTypingTarget() {
   const el = document.activeElement;
   if (!el) return false;
+  if (el.id === "drawTextInput" && el.classList.contains("hidden")) return false;
   const tag = el.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
@@ -1708,7 +2318,8 @@ function bindEvents() {
   $("btnStepNext").addEventListener("click", () => stepBar(1));
   $("btnPlay").addEventListener("click", () => (state.playing ? pause() : play()));
   $("btnSpeed").addEventListener("click", cycleSpeed);
-  $("btnJump").addEventListener("click", jumpToBacktestDate);
+  $("btnJump").addEventListener("click", () => jumpToBacktestDate());
+  $("btnRandomStart")?.addEventListener("click", startRandomBacktest);
   $("btnResetData")?.addEventListener("click", resetPracticeData);
 }
 
@@ -1734,6 +2345,10 @@ async function init() {
   updatePositionInfoPanel();
 
   if (saved) {
+    if (saved.replayMode) {
+      state.replayMode = true;
+      state.replayUntilTime = saved.replayUntilTime ?? saved.cursorTime ?? null;
+    }
     setUiLoading(true, "loading.restore");
     try {
       const barData = await loadBarsFromSnapshot(saved);
@@ -1743,12 +2358,14 @@ async function init() {
         applyBarsPayload(barData, { replace: true });
         setupJumpDateInputs();
         applyPracticeState(saved);
+        prefetchOtherTimeframes(state.loadedStart, state.loadedEnd);
       }
     } finally {
       setUiLoading(false);
     }
   } else {
     await loadInitialBars();
+    prefetchOtherTimeframes(state.loadedStart, state.loadedEnd);
     savePracticeStateNow();
   }
 }

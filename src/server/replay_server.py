@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import sys
+from collections import OrderedDict
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -17,24 +18,64 @@ from src.core.m5 import (
     default_replay_range,
     list_available_dates,
     load_m5_by_date_range,
-    load_trading_days_ending,
     normalize_timeframe,
+    pick_random_trading_day,
     range_before_trading_day,
     resample_bars,
     timeframe_bar_seconds,
 )
 from src.server.history import build_trades_index, report_summary, trade_detail
 
-ROOT = get_paths()["root"]
-WEB_DIR = ROOT / "web"
-LEGACY_DIR = ROOT / "web" / "legacy"
-REPORT_DIR = ROOT / "report"
+
+def _parse_until(qs: dict) -> pd.Timestamp | None:
+    raw = qs.get("until", [None])[0]
+    if not raw:
+        return None
+    try:
+        return pd.Timestamp(int(raw), unit="s")
+    except (TypeError, ValueError):
+        return None
+
+
+_API_BARS_CACHE: OrderedDict[tuple, pd.DataFrame] = OrderedDict()
+_API_BARS_CACHE_MAX = 48
+
+
+def _load_bars_resampled(start: str, end: str, tf: str, until: pd.Timestamp | None) -> pd.DataFrame:
+    ukey = int(until.timestamp()) if until is not None else None
+    key = (start, end, tf, ukey)
+    cached = _API_BARS_CACHE.get(key)
+    if cached is not None:
+        _API_BARS_CACHE.move_to_end(key)
+        return cached
+    bars = resample_bars(load_m5_by_date_range(start, end), tf, until=until)
+    _API_BARS_CACHE[key] = bars
+    _API_BARS_CACHE.move_to_end(key)
+    while len(_API_BARS_CACHE) > _API_BARS_CACHE_MAX:
+        _API_BARS_CACHE.popitem(last=False)
+    return bars
+
+
+def replay_root() -> Path:
+    return get_paths()["root"]
+
+
+def web_dir() -> Path:
+    return replay_root() / "web"
+
+
+def legacy_dir() -> Path:
+    return web_dir() / "legacy"
+
+
+def report_dir() -> Path:
+    return replay_root() / "report"
 
 
 class ReplayHandler(SimpleHTTPRequestHandler):
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(WEB_DIR), **kwargs)
+        super().__init__(*args, directory=str(web_dir()), **kwargs)
 
     def log_message(self, fmt, *args):
         if len(args) > 1 and str(args[1]) == "200":
@@ -51,6 +92,9 @@ class ReplayHandler(SimpleHTTPRequestHandler):
             return
         if path == "/api/bars":
             self._send_json(self._api_bars(qs))
+            return
+        if path == "/api/random_replay_start":
+            self._handle_random_replay_start(qs)
             return
         if path == "/api/dates":
             self._send_json({"dates": list_available_dates()})
@@ -85,7 +129,7 @@ class ReplayHandler(SimpleHTTPRequestHandler):
             self._serve_legacy(path)
             return
         if path in ("", "/"):
-            self._serve_file(WEB_DIR / "index.html")
+            self._serve_file(web_dir() / "index.html")
             return
         return super().do_GET()
 
@@ -108,7 +152,17 @@ class ReplayHandler(SimpleHTTPRequestHandler):
             "bar_ms_per_candle_at_1x": replay["bar_ms_per_candle_at_1x"],
             "default_timeframe": replay["default_timeframe"],
             "timeframes": replay["timeframes"],
+            "random_backtest_min_forward_days": replay["random_backtest_min_forward_days"],
         }
+
+    def _handle_random_replay_start(self, qs: dict) -> None:
+        replay = replay_defaults()
+        raw = qs.get("min_forward_days", [None])[0]
+        min_fwd = int(raw) if raw is not None else replay["random_backtest_min_forward_days"]
+        try:
+            self._send_json(pick_random_trading_day(min_fwd))
+        except ValueError as e:
+            self._send_json_error(400, {"error": str(e)})
 
     def _api_bars(self, qs: dict) -> dict:
         tf = normalize_timeframe(qs.get("tf", [None])[0] or qs.get("timeframe", [None])[0])
@@ -116,6 +170,7 @@ class ReplayHandler(SimpleHTTPRequestHandler):
         end = qs.get("end", [None])[0]
         days = qs.get("days", [None])[0]
         before = qs.get("before", [None])[0]
+        until = _parse_until(qs)
 
         if before and days:
             n = int(days)
@@ -123,7 +178,7 @@ class ReplayHandler(SimpleHTTPRequestHandler):
             if span is None:
                 return self._bars_payload(pd.DataFrame(), before, before, tf=tf, has_more=False)
             start, end = span
-            bars = resample_bars(load_m5_by_date_range(start, end), tf)
+            bars = _load_bars_resampled(start, end, tf, until)
             dates = list_available_dates()
             has_more = dates.index(start) > 0 if start in dates else False
             return self._bars_payload(bars, start, end, tf=tf, has_more=has_more)
@@ -132,15 +187,15 @@ class ReplayHandler(SimpleHTTPRequestHandler):
             n = int(days)
             dates = list_available_dates()
             end = end or dates[-1]
-            bars = resample_bars(load_trading_days_ending(end, n), tf)
             i = dates.index(end) if end in dates else len(dates) - 1
             start = dates[max(0, i - n + 1)]
+            bars = _load_bars_resampled(start, end, tf, until)
             has_more = start != dates[0]
             return self._bars_payload(bars, start, end, tf=tf, has_more=has_more)
 
         if not start or not end:
             start, end = default_replay_range()
-        bars = resample_bars(load_m5_by_date_range(start, end), tf)
+        bars = _load_bars_resampled(start, end, tf, until)
         dates = list_available_dates()
         has_more = start != dates[0] if dates else False
         return self._bars_payload(bars, start, end, tf=tf, has_more=has_more)
@@ -167,7 +222,7 @@ class ReplayHandler(SimpleHTTPRequestHandler):
 
     def _serve_report_file(self, path: str):
         name = path.split("/report/", 1)[-1]
-        fp = REPORT_DIR / name
+        fp = report_dir() / name
         if not fp.exists() or not fp.is_file():
             self.send_error(404)
             return
@@ -175,10 +230,10 @@ class ReplayHandler(SimpleHTTPRequestHandler):
 
     def _serve_legacy(self, path: str):
         name = path.replace("/legacy/", "", 1)
-        fp = LEGACY_DIR / name
+        fp = legacy_dir() / name
         if not fp.exists():
             # fallback to old viz/
-            fp = ROOT / "viz" / name
+            fp = replay_root() / "viz" / name
         if not fp.exists():
             self.send_error(404)
             return
@@ -195,7 +250,7 @@ class ReplayHandler(SimpleHTTPRequestHandler):
         self.wfile.write(content)
 
     def _send_limits_summary(self):
-        fp = ROOT / "limit_orders_summary.csv"
+        fp = replay_root() / "limit_orders_summary.csv"
         if not fp.exists():
             self._send_json({"error": "请先运行 python analyze_limits.py"})
             return
@@ -204,7 +259,7 @@ class ReplayHandler(SimpleHTTPRequestHandler):
         self._send_json(pd.read_csv(fp).to_dict(orient="records"))
 
     def _send_limits_near_miss(self):
-        fp = ROOT / "limit_orders_analysis.csv"
+        fp = replay_root() / "limit_orders_analysis.csv"
         if not fp.exists():
             self._send_json([])
             return
@@ -227,7 +282,7 @@ class ReplayHandler(SimpleHTTPRequestHandler):
         self._send_json(nm[cols].head(200).to_dict(orient="records"))
 
     def _send_latest_summary(self):
-        fp = ROOT / "backtest_latest_summary.csv"
+        fp = replay_root() / "backtest_latest_summary.csv"
         if not fp.exists():
             self._send_json({"error": "请先运行 python backtest_latest_strategy.py"})
             return
@@ -235,40 +290,51 @@ class ReplayHandler(SimpleHTTPRequestHandler):
 
         self._send_json(pd.read_csv(fp).to_dict(orient="records"))
 
-    def _send_json(self, data):
+    def _send_json(self, data, status: int = 200):
         body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_json_error(self, status: int, payload: dict) -> None:
+        self._send_json(payload, status=status)
 
-def main():
-    WEB_DIR.mkdir(exist_ok=True)
-    LEGACY_DIR.mkdir(parents=True, exist_ok=True)
+
+def create_server(
+    host: str | None = None,
+    ports: range | list[int] | None = None,
+) -> tuple[ThreadingHTTPServer, int]:
+    """创建并绑定 HTTP 服务；返回 (server, port)。"""
+    web_dir().mkdir(exist_ok=True)
+    legacy_dir().mkdir(parents=True, exist_ok=True)
 
     cfg = get_config()
-    host = cfg.get("server", {}).get("host", "0.0.0.0")
+    bind_host = host if host is not None else cfg.get("server", {}).get("host", "0.0.0.0")
     env_port = os.environ.get("PORT")
-    if env_port:
+    if ports is not None:
+        ports_to_try = list(ports)
+    elif env_port:
         ports_to_try = [int(env_port)]
     else:
         base_port = replay_defaults()["port"]
-        ports_to_try = range(base_port, base_port + 5)
+        ports_to_try = list(range(base_port, base_port + 5))
 
     for try_port in ports_to_try:
         try:
-            server = ThreadingHTTPServer((host, try_port), ReplayHandler)
-            port = try_port
-            break
+            server = ThreadingHTTPServer((bind_host, try_port), ReplayHandler)
+            return server, try_port
         except OSError as e:
             if getattr(e, "errno", None) != 48:
                 raise
-    else:
-        raise SystemExit("端口均被占用，请设置 PORT 或修改 config.yaml 中 replay.port")
+    raise OSError("端口均被占用，请设置 PORT 或修改 config.yaml 中 replay.port")
 
+
+def main():
+    server, port = create_server()
+    host = server.server_address[0]
     print(f"\n复盘练习工具 → http://{host}:{port}/")
     print("  历史回测报告 → /legacy/index.html")
     print("  报告摘要页   → /report.html\n")
@@ -276,6 +342,7 @@ def main():
 
 
 if __name__ == "__main__":
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
+    root = replay_root()
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
     main()

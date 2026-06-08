@@ -1,8 +1,27 @@
-/* 图表画线：水平线 / 趋势线 / 斐波那契 / 矩形 / 文字（可编辑） */
+/* 图表画线：水平线 / 趋势线 / 路径 / 斐波那契 / 矩形 / 文字（可编辑） */
 
 const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+/** 快捷键 → 工具（避开 B/S/C/L/Space/方向键等交易快捷键） */
+const DRAW_TOOL_KEYS = {
+  v: "cursor",
+  "1": "cursor",
+  h: "hline",
+  "2": "hline",
+  t: "trend",
+  "3": "trend",
+  p: "path",
+  "4": "path",
+  f: "fib",
+  "5": "fib",
+  r: "rect",
+  "6": "rect",
+  a: "text",
+  "7": "text",
+};
 const HIT_PX = 8;
 const HANDLE_R = 5;
+const PATH_ARROW_LEN = 10;
+const PATH_ARROW_WING = 4.5;
 const TEXT_FONT_SIZE = 14;
 const TEXT_CHAR_W = 8;
 const TEXT_LINE_H = 18;
@@ -24,20 +43,119 @@ let drawSeries = null;
 let drawChartEl = null;
 let drawOverlayEl = null;
 let drawTextInputEl = null;
+let onDrawToolChange = null;
+/** 当前 chart series 上的 K 线，仅用于时间轴刻度换算（与 allBars 无关） */
+let getSeriesBars = () => [];
+
+function averageBarStep(bars) {
+  if (!bars?.length) return 300;
+  if (bars.length === 1) return 300;
+  let sum = 0;
+  let n = 0;
+  const start = Math.max(1, bars.length - 5);
+  for (let i = start; i < bars.length; i++) {
+    sum += bars[i].time - bars[i - 1].time;
+    n++;
+  }
+  return n ? sum / n : bars[1].time - bars[0].time;
+}
+
+function timeFromLogical(logical) {
+  const bars = getSeriesBars();
+  if (!bars.length) return null;
+  if (logical < 0) {
+    return bars[0].time + logical * averageBarStep(bars);
+  }
+  const last = bars.length - 1;
+  if (logical >= last) {
+    return bars[last].time + (logical - last) * averageBarStep(bars);
+  }
+  const lo = Math.floor(logical);
+  const hi = Math.ceil(logical);
+  if (lo === hi) return bars[lo].time;
+  const t0 = bars[lo].time;
+  const t1 = bars[hi].time;
+  if (t1 === t0) return t0;
+  return t0 + (logical - lo) * (t1 - t0);
+}
+
+function snapTimeAtChartX(x) {
+  let time = drawChart.timeScale().coordinateToTime(x);
+  if (time != null) return time;
+  const toLogical = drawChart.timeScale().coordinateToLogical;
+  if (typeof toLogical !== "function") return null;
+  const logical = toLogical.call(drawChart.timeScale(), x);
+  if (logical == null || !Number.isFinite(logical)) return null;
+  return timeFromLogical(logical);
+}
 
 function drawClientToPoint(clientX, clientY) {
   if (!drawChart || !drawSeries || !drawChartEl) return null;
   const rect = drawChartEl.getBoundingClientRect();
   const x = clientX - rect.left;
   const y = clientY - rect.top;
-  const time = drawChart.timeScale().coordinateToTime(x);
+  const time = snapTimeAtChartX(x);
   const price = drawSeries.coordinateToPrice(y);
   if (time == null || price == null || !Number.isFinite(price)) return null;
   return { time, price, x, y };
 }
 
+/** 两根相邻 K 线时间之间按时间线性插值 X（只用 chart 时间轴 API） */
+function interpolateTimeToX(t0, x0, t1, x1, time) {
+  if (x0 == null || x1 == null || !Number.isFinite(x0) || !Number.isFinite(x1)) return null;
+  if (t1 === t0) return x0;
+  const frac = (time - t0) / (t1 - t0);
+  return x0 + frac * (x1 - x0);
+}
+
+/** 时间轴坐标 → 屏幕 X：精确 bar 用 timeToCoordinate，否则在相邻 bar 时间之间插值 */
 function drawTimeToX(time) {
-  return drawChart?.timeScale().timeToCoordinate(time) ?? null;
+  if (!drawChart || time == null) return null;
+  const ts = drawChart.timeScale();
+
+  const direct = ts.timeToCoordinate(time);
+  if (direct != null && Number.isFinite(direct)) return direct;
+
+  const series = getSeriesBars();
+  const n = series.length;
+  if (!n) return null;
+
+  const xAt = (t) => ts.timeToCoordinate(t);
+
+  if (n === 1) return xAt(series[0].time);
+
+  const first = series[0].time;
+  const last = series[n - 1].time;
+
+  if (time <= first) {
+    return interpolateTimeToX(first, xAt(first), series[1].time, xAt(series[1].time), time);
+  }
+  if (time >= last) {
+    return interpolateTimeToX(
+      series[n - 2].time,
+      xAt(series[n - 2].time),
+      last,
+      xAt(last),
+      time
+    );
+  }
+
+  let lo = 0;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (series[mid].time <= time) lo = mid;
+    else hi = mid - 1;
+  }
+  if (series[lo].time === time) return xAt(time);
+  const hiIdx = lo + 1;
+  return interpolateTimeToX(
+    series[lo].time,
+    xAt(series[lo].time),
+    series[hiIdx].time,
+    xAt(series[hiIdx].time),
+    time
+  );
 }
 
 function drawPriceToY(price) {
@@ -91,13 +209,12 @@ function drawExtendTrend(p1, p2, w, h) {
   return clipSegmentToRect(ex1, ey1, ex2, ey2, w, h);
 }
 
+/** 第一点 = 0%，第二点 = 100%，按绘制方向插值 */
 function drawFibPrices(p1, p2) {
-  const low = Math.min(p1.price, p2.price);
-  const high = Math.max(p1.price, p2.price);
-  const span = high - low;
+  const span = p2.price - p1.price;
   return FIB_LEVELS.map((lv) => ({
     level: lv,
-    price: high - lv * span,
+    price: p1.price + lv * span,
   }));
 }
 
@@ -114,6 +231,81 @@ function drawRectBounds(p1, p2) {
     top: Math.min(y1, y2),
     bottom: Math.max(y1, y2),
   };
+}
+
+function pathScreenPoints(points) {
+  const out = [];
+  for (const p of points) {
+    const x = drawTimeToX(p.time);
+    const y = drawPriceToY(p.price);
+    if (y == null) return null;
+    if (x == null) return null;
+    out.push({ x, y });
+  }
+  return out.length >= 2 ? out : null;
+}
+
+function appendPathArrowHead(g, x1, y1, x2, y2, color) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (len < 1.5) return;
+  const ux = dx / len;
+  const uy = dy / len;
+  const px = -uy;
+  const py = ux;
+  const bx = x2 - ux * PATH_ARROW_LEN;
+  const by = y2 - uy * PATH_ARROW_LEN;
+  g.appendChild(
+    svgEl("polygon", {
+      points: [
+        `${x2},${y2}`,
+        `${bx + px * PATH_ARROW_WING},${by + py * PATH_ARROW_WING}`,
+        `${bx - px * PATH_ARROW_WING},${by - py * PATH_ARROW_WING}`,
+      ].join(" "),
+      fill: color,
+      class: "draw-path-arrowhead",
+    })
+  );
+}
+
+function renderPathSegments(g, screenPts, { color, dashed, arrowOnLast }) {
+  for (let i = 0; i < screenPts.length - 1; i++) {
+    const p1 = screenPts[i];
+    const p2 = screenPts[i + 1];
+    const isLast = i === screenPts.length - 2;
+    let x1 = p1.x;
+    let y1 = p1.y;
+    let x2 = p2.x;
+    let y2 = p2.y;
+    if (isLast && arrowOnLast) {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const len = Math.hypot(dx, dy);
+      if (len > PATH_ARROW_LEN) {
+        const ux = dx / len;
+        const uy = dy / len;
+        const inset = PATH_ARROW_LEN * 0.85;
+        x2 -= ux * inset;
+        y2 -= uy * inset;
+      }
+    }
+    g.appendChild(
+      svgEl("line", {
+        x1,
+        y1,
+        x2,
+        y2,
+        stroke: color,
+        "stroke-width": dashed ? 1 : 1.5,
+        "stroke-dasharray": dashed ? "6 4" : "none",
+        class: isLast && arrowOnLast ? "draw-path-line draw-path-last" : "draw-path-line",
+      })
+    );
+    if (isLast && arrowOnLast) {
+      appendPathArrowHead(g, p1.x, p1.y, p2.x, p2.y, color);
+    }
+  }
 }
 
 function distPointToSegment(px, py, x1, y1, x2, y2) {
@@ -154,6 +346,7 @@ function closeTextInput(commit) {
   const edit = drawState.textEdit;
   if (!edit || !drawTextInputEl) return;
   drawTextInputEl.classList.add("hidden");
+  drawTextInputEl.blur();
   drawState.textEdit = null;
 
   if (!commit) {
@@ -278,6 +471,7 @@ function renderDrawings() {
     });
     if (item.type === "hline") renderHLine(g, item, w, h, false);
     else if (item.type === "trend") renderTrend(g, item, w, h, false);
+    else if (item.type === "path") renderPath(g, item, w, h, false);
     else if (item.type === "fib") renderFib(g, item, w, false);
     else if (item.type === "rect") renderRect(g, item, w, h, false);
     else if (item.type === "text") renderText(g, item, false);
@@ -290,6 +484,10 @@ function renderDrawings() {
       renderTrendSegment(g, drawState.draft.points[0], drawState.preview, w, h, true);
     } else if (drawState.draft.type === "fib" && drawState.draft.points.length >= 1 && drawState.preview) {
       renderFibShape(g, drawState.draft.points[0], drawState.preview, w, h, true);
+    } else if (drawState.draft.type === "path" && drawState.draft.points.length >= 1) {
+      const pts = [...drawState.draft.points];
+      if (drawState.preview) pts.push(drawState.preview);
+      renderPath(g, { id: -1, type: "path", points: pts }, w, h, true);
     } else if (drawState.draft.type === "rect" && drawState.draft.points.length >= 1) {
       const p1 = drawState.draft.points[0];
       const p2 = drawState.preview || p1;
@@ -366,6 +564,40 @@ function renderTrendSegment(g, p1, p2, w, h, dashed) {
       "stroke-dasharray": dashed ? "6 4" : "none",
     })
   );
+}
+
+function renderPath(g, item, w, h, draft) {
+  const points = item.points || [];
+  if (points.length < 2) return;
+  const screenPts = pathScreenPoints(points);
+  if (!screenPts) return;
+  const selected = item.id === drawState.selectedId;
+  const color = draft ? "#e6c87a" : selected ? "#e6eaf2" : "#d4b87a";
+  renderPathSegments(g, screenPts, {
+    color,
+    dashed: !!draft,
+    arrowOnLast: true,
+  });
+  if (selected || draft) {
+    const handlePts = draft && drawState.preview ? points.slice(0, -1) : points;
+    handlePts.forEach((p, i) => {
+      const x = drawTimeToX(p.time);
+      const y = drawPriceToY(p.price);
+      if (x == null || y == null) return;
+      g.appendChild(
+        svgEl("circle", {
+          cx: x,
+          cy: y,
+          r: HANDLE_R,
+          fill: "#d4b87a",
+          stroke: "#0f1115",
+          "stroke-width": 1,
+          class: "draw-handle",
+          "data-point": i,
+        })
+      );
+    });
+  }
 }
 
 function renderFib(g, item, w, h, draft) {
@@ -585,6 +817,26 @@ function hitTestItem(clientX, clientY) {
       }
     }
 
+    if (item.type === "path" && item.points?.length >= 2) {
+      for (let pi = 0; pi < item.points.length; pi++) {
+        const px = drawTimeToX(item.points[pi].time);
+        const py = drawPriceToY(item.points[pi].price);
+        if (px != null && py != null && Math.hypot(pt.x - px, pt.y - py) < HIT_PX + 4) {
+          return { item, kind: "path-point", pointIndex: pi };
+        }
+      }
+      const screenPts = pathScreenPoints(item.points);
+      if (screenPts) {
+        for (let si = 0; si < screenPts.length - 1; si++) {
+          const p1 = screenPts[si];
+          const p2 = screenPts[si + 1];
+          if (distPointToSegment(pt.x, pt.y, p1.x, p1.y, p2.x, p2.y) < HIT_PX) {
+            return { item, kind: "path-line" };
+          }
+        }
+      }
+    }
+
     if (item.type === "fib" && item.points?.length >= 2) {
       const p1 = item.points[0];
       const p2 = item.points[1];
@@ -704,6 +956,20 @@ function applyEditDrag(pt) {
     return;
   }
 
+  if (item.type === "path" && item.points?.length >= 2) {
+    if (drag.kind === "path-point") {
+      item.points[drag.pointIndex] = { time: pt.time, price: pt.price };
+    } else if (drag.kind === "path-line") {
+      const dt = pt.time - drag.start.time;
+      const dp = pt.price - drag.start.price;
+      item.points = drag.snapshot.points.map((p) => ({
+        time: p.time + dt,
+        price: p.price + dp,
+      }));
+    }
+    return;
+  }
+
   if (item.type === "fib" && item.points?.length >= 2) {
     if (drag.kind === "fib-point") {
       item.points[drag.pointIndex] = { time: pt.time, price: pt.price };
@@ -748,6 +1014,44 @@ function finishDraft() {
     type: drawState.draft.type,
     points: drawState.draft.points.map((p) => ({ ...p })),
   });
+  drawState.draft = null;
+  drawState.preview = null;
+  return id;
+}
+
+function pathPointsEqual(a, b) {
+  return (
+    a &&
+    b &&
+    a.time === b.time &&
+    Math.abs(a.price - b.price) < 1e-9
+  );
+}
+
+function collapsePathPoints(points) {
+  const out = [];
+  for (const p of points) {
+    if (out.length && pathPointsEqual(out[out.length - 1], p)) continue;
+    out.push(p);
+  }
+  return out;
+}
+
+function finishPathDraft(opts = {}) {
+  const draft = drawState.draft;
+  if (draft?.type !== "path") return null;
+  let points = collapsePathPoints(draft.points.map((p) => ({ ...p })));
+  if (opts.includePreview && drawState.preview) {
+    const last = points[points.length - 1];
+    const p = drawState.preview;
+    if (!pathPointsEqual(last, p)) {
+      points.push({ time: p.time, price: p.price });
+    }
+  }
+  points = collapsePathPoints(points);
+  if (points.length < 2) return null;
+  const id = drawState.nextId++;
+  drawState.items.push({ id, type: "path", points });
   drawState.draft = null;
   drawState.preview = null;
   return id;
@@ -800,6 +1104,18 @@ function placeDrawing(pt) {
   }
 
   if (drawState.tool === "rect" || drawState.tool === "text") return;
+
+  if (drawState.tool === "path") {
+    if (!drawState.draft) {
+      drawState.draft = { type: "path", points: [{ time: pt.time, price: pt.price }] };
+    } else {
+      const last = drawState.draft.points[drawState.draft.points.length - 1];
+      if (!pathPointsEqual(last, pt)) {
+        drawState.draft.points.push({ time: pt.time, price: pt.price });
+      }
+    }
+    return;
+  }
 
   if (!drawState.draft) {
     drawState.draft = { type: drawState.tool, points: [{ time: pt.time, price: pt.price }] };
@@ -877,6 +1193,12 @@ function onChartMouseMove(e) {
   if (drawState.draft) {
     drawState.preview = pt;
     renderDrawings();
+    return;
+  }
+
+  if (drawState.tool === "path") {
+    drawState.preview = pt;
+    renderDrawings();
   }
 }
 
@@ -887,12 +1209,40 @@ function onChartMouseUp() {
 }
 
 function onChartDblClick(e) {
-  if (drawState.tool !== "cursor" || !drawChartEl) return;
+  if (!drawChartEl) return;
+  if (drawState.tool === "path") {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = finishPathDraft({ includePreview: true });
+    if (id != null) afterDrawComplete(id);
+    return;
+  }
+  if (drawState.tool !== "cursor") return;
   const hit = hitTestItem(e.clientX, e.clientY);
   if (!hit || hit.item.type !== "text") return;
   e.preventDefault();
   e.stopPropagation();
   beginEditTextItem(hit.item);
+}
+
+function onChartContextMenu(e) {
+  if (drawState.tool !== "path") return;
+  const n = drawState.draft?.points?.length ?? 0;
+  if (n < 2 && !(n === 1 && drawState.preview)) return;
+  e.preventDefault();
+  const id = finishPathDraft({ includePreview: true });
+  if (id != null) afterDrawComplete(id);
+}
+
+function drawKeyBlocked() {
+  if (drawState.textEdit && drawTextInputEl && !drawTextInputEl.classList.contains("hidden")) {
+    return true;
+  }
+  const el = document.activeElement;
+  if (!el) return false;
+  if (el.id === "drawTextInput" && el.classList.contains("hidden")) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
 function onDrawKeyDown(e) {
@@ -906,12 +1256,47 @@ function onDrawKeyDown(e) {
     }
     return;
   }
+
+  if (
+    !drawKeyBlocked() &&
+    !e.metaKey &&
+    !e.ctrlKey &&
+    !e.altKey &&
+    !e.repeat
+  ) {
+    const lookup = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const tool = DRAW_TOOL_KEYS[lookup];
+    if (tool) {
+      e.preventDefault();
+      setDrawTool(tool);
+      return;
+    }
+  }
+
   if (e.key === "Escape") {
+    e.preventDefault();
     drawState.draft = null;
     drawState.preview = null;
     drawState.editDrag = null;
     drawState.rectDragging = false;
-    renderDrawings();
+    if (drawState.tool !== "cursor") {
+      setDrawTool("cursor");
+    } else {
+      drawState.selectedId = null;
+      renderDrawings();
+    }
+    return;
+  }
+  if (
+    e.key === "Enter" &&
+    drawState.tool === "path" &&
+    (drawState.draft?.points?.length >= 2 ||
+      (drawState.draft?.points?.length === 1 && drawState.preview))
+  ) {
+    e.preventDefault();
+    const id = finishPathDraft({ includePreview: true });
+    if (id != null) afterDrawComplete(id);
+    return;
   }
   if (
     e.key === "Enter" &&
@@ -945,6 +1330,7 @@ function setDrawTool(tool) {
     if (btn.dataset.tool === "clear") return;
     btn.classList.toggle("active", btn.dataset.tool === tool);
   });
+  if (onDrawToolChange) onDrawToolChange(tool);
   renderDrawings();
 }
 
@@ -991,16 +1377,19 @@ function importDrawingsState(data) {
   renderDrawings();
 }
 
-function initDrawings(chart, series, chartEl) {
+function initDrawings(chart, series, chartEl, hooks = {}) {
   drawChart = chart;
   drawSeries = series;
   drawChartEl = chartEl;
+  onDrawToolChange = hooks.onToolChange ?? null;
+  getSeriesBars = hooks.getSeriesBars ?? (() => []);
   drawOverlayEl = document.getElementById("drawOverlay");
   drawTextInputEl = document.getElementById("drawTextInput");
   if (!drawChartEl) return;
 
   drawChartEl.addEventListener("mousedown", onChartMouseDown, true);
   drawChartEl.addEventListener("dblclick", onChartDblClick, true);
+  drawChartEl.addEventListener("contextmenu", onChartContextMenu, true);
   window.addEventListener("mousemove", onChartMouseMove);
   window.addEventListener("mouseup", onChartMouseUp);
   window.addEventListener("keydown", onDrawKeyDown);

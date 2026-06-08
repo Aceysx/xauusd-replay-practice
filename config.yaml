@@ -5,6 +5,7 @@ paths:
   statement: Statement.htm
   m5_dir: Files
   m5_glob: "xauusd_xauusdm_m5_{date}.csv"
+  m1_glob: "xauusd_xauusdm_m1_{date}.csv"
 
 timezone:
   broker_utc_offset_hours: 3
@@ -26,6 +27,8 @@ replay:
   default_trading_days: 30
   bar_ms_per_candle_at_1x: 300
   default_timeframe: 5m
+  # 随机回测起点：该日之后至少还有多少个交易日可向前练习
+  random_backtest_min_forward_days: 10
 
 server:
   host: "127.0.0.1"

@@ -63,17 +63,45 @@ main {
   gap: 4px;
 }
 .draw-toolbar button {
-  min-width: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-width: 36px;
   height: 36px;
-  padding: 0 10px;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
-  font-weight: 600;
   cursor: pointer;
-  line-height: 1;
+  line-height: 0;
+}
+.draw-toolbar .draw-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  flex-shrink: 0;
+  color: inherit;
+  overflow: visible;
+  pointer-events: none;
+}
+.draw-toolbar .draw-icon path,
+.draw-toolbar .draw-icon line,
+.draw-toolbar .draw-icon polyline,
+.draw-toolbar .draw-icon rect,
+.draw-toolbar .draw-icon circle,
+.draw-toolbar .draw-icon polygon {
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.draw-toolbar .draw-icon .i-fill {
+  fill: currentColor;
+  stroke: none;
 }
 .draw-toolbar button:hover { border-color: var(--accent); color: var(--accent); }
 .draw-toolbar button.active {
@@ -81,7 +109,17 @@ main {
   border-color: var(--accent);
   color: #fff;
 }
-.draw-toolbar .draw-clear { color: var(--red); font-size: 18px; min-width: 36px; }
+.draw-toolbar .draw-clear { color: var(--red); }
+.draw-toolbar .draw-clear:hover {
+  border-color: var(--red);
+  color: var(--red);
+  background: rgba(240, 113, 120, 0.08);
+}
+.draw-toolbar .draw-clear.active {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
 .toolbar button.btn-reset {
   border-color: var(--red);
   color: var(--red);
@@ -94,12 +132,13 @@ main {
   inset: 0;
   pointer-events: none;
   z-index: 3;
-  overflow: hidden;
+  overflow: visible;
 }
 .chart-area.draw-active #chart {
   cursor: crosshair;
 }
-.draw-item.draw-selected line {
+.draw-item.draw-selected line,
+.draw-item.draw-selected polygon.draw-path-arrowhead {
   filter: brightness(1.15);
 }
 .draw-item.draw-selected rect {
