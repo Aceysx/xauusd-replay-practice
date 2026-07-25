@@ -654,11 +654,11 @@ body.resizing-panel {
   cursor: pointer;
 }
 .stmt-table tbody tr.stmt-chart-on {
-  background: rgba(91, 156, 245, 0.12);
-  box-shadow: inset 3px 0 0 var(--accent);
+  background: rgba(91, 156, 245, 0.28);
+  box-shadow: inset 4px 0 0 #5b9cf5;
 }
 .stmt-table tbody tr.stmt-chart-on:hover {
-  background: rgba(91, 156, 245, 0.18);
+  background: rgba(91, 156, 245, 0.36);
 }
 .stmt-table .buy { color: var(--green); }
 .stmt-table .sell { color: var(--red); }
