@@ -745,6 +745,11 @@ body.resizing-panel {
   left: 0;
   top: calc(100% + 4px);
   min-width: 140px;
+  max-height: min(240px, 50vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -757,6 +762,7 @@ body.resizing-panel {
 .stmt-tags-menu.stmt-tags-menu-fixed {
   position: fixed;
   top: auto;
+  max-height: min(240px, calc(100vh - 24px));
 }
 .stmt-tags-empty {
   font-size: 12px;
