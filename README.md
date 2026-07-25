@@ -46,11 +46,11 @@
 
 ### 01 · 回放主界面
 
-![回放主界面](docs/screenshots/img1.png)
+![回放主界面](docs/screenshots/img_1.png)
 
 ### 02 · 模拟开仓
 
-![模拟开仓](docs/screenshots/img_1.png)
+![模拟开仓](docs/screenshots/img.png)
 
 ### 03 · 下单记录
 
