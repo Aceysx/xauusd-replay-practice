@@ -1102,9 +1102,49 @@ function placeRrHitArea(hitEl, box, entryY, sl, tp) {
   placeRrEl(hitEl, box, hitTop, Math.max(28, hitBottom - hitTop), true);
 }
 
+function sanitizeSlTpLevel(direction, entry, level, kind) {
+  if (level == null || !Number.isFinite(level) || !(level > 0)) return null;
+  if (entry == null || !Number.isFinite(entry)) return null;
+  if (Math.abs(level - entry) < 0.005) return null;
+  const dir = String(direction || "").toLowerCase();
+  if (dir === "buy") {
+    if (kind === "sl" && !(level < entry)) return null;
+    if (kind === "tp" && !(level > entry)) return null;
+  } else if (dir === "sell") {
+    if (kind === "sl" && !(level > entry)) return null;
+    if (kind === "tp" && !(level < entry)) return null;
+  }
+  return level;
+}
+
+/** Chart display SL/TP: drop wrong-side broker levels; for closed trades fill from close if needed. */
+function resolveDisplaySlTp(trade) {
+  let sl = sanitizeSlTpLevel(trade.direction, trade.entry, trade.sl, "sl");
+  let tp = sanitizeSlTpLevel(trade.direction, trade.entry, trade.tp, "tp");
+  if (trade.active) return { sl, tp };
+
+  const close = trade.close;
+  if (
+    close == null ||
+    !Number.isFinite(close) ||
+    trade.entry == null ||
+    !Number.isFinite(trade.entry) ||
+    Math.abs(close - trade.entry) < 0.005
+  ) {
+    return { sl, tp };
+  }
+  const dir = String(trade.direction || "").toLowerCase();
+  const favorable = dir === "buy" ? close > trade.entry : close < trade.entry;
+  if (favorable) {
+    if (tp == null) tp = close;
+  } else if (sl == null) {
+    sl = close;
+  }
+  return { sl, tp };
+}
+
 function effectiveSlTp(trade) {
-  let sl = trade.sl;
-  let tp = trade.tp;
+  let { sl, tp } = resolveDisplaySlTp(trade);
   if (!trade.active) return { sl, tp };
   const preview = state.dragPrice;
   if (state.drag === "sl" && preview != null) sl = preview;
@@ -2254,6 +2294,8 @@ function normalizeOrderRecord(rec) {
   rec.notes = String(rec.notes ?? "");
   rec.tags = normalizeOrderTags(rec.tags);
   rec.lots = rec.lots ?? LOTS;
+  rec.sl = sanitizeSlTpLevel(rec.direction, rec.entry, rec.sl, "sl");
+  rec.tp = sanitizeSlTpLevel(rec.direction, rec.entry, rec.tp, "tp");
   rec.max_float_profit = rec.max_float_profit ?? 0;
   rec.max_float_loss = rec.max_float_loss ?? 0;
   rec.is_win = (rec.net ?? 0) > 0;
@@ -2356,6 +2398,8 @@ function parseBrokerDealsCsv(text) {
     }
     const lots = parseOptionalNum(get("lots")) ?? LOTS;
     const net = parseOptionalNum(get("profit")) ?? 0;
+    const rawSl = parseOptionalNum(get("stop_loss"));
+    const rawTp = parseOptionalNum(get("take_profit"));
     records.push({
       id,
       entry_reason: "",
@@ -2370,8 +2414,8 @@ function parseBrokerDealsCsv(text) {
       close_ts: closeTs,
       entry,
       close,
-      sl: parseOptionalNum(get("stop_loss")),
-      tp: parseOptionalNum(get("take_profit")),
+      sl: sanitizeSlTpLevel(type, entry, rawSl, "sl"),
+      tp: sanitizeSlTpLevel(type, entry, rawTp, "tp"),
       lots,
       net,
       exit: mapBrokerCloseReason(get("close_reason")),
