@@ -13,6 +13,8 @@
   let tagCatalog = [];
   /** @type {string|null} */
   let activeTagId = null;
+  /** @type {{ key: string, dir: "asc" | "desc" }} */
+  let tagSort = { key: "n", dir: "desc" };
   let saveTimer = null;
   let saveMsgTimer = null;
 
@@ -252,6 +254,58 @@
     if (clearBtn) clearBtn.hidden = !activeTagId;
   }
 
+  function sortValue(row, key) {
+    if (key === "label") {
+      if (row.tagId === UNTAGGED_ID) return t("ordersPage.untagged");
+      return String(row.label || tagLabel(row.tagId) || "");
+    }
+    const v = row[key];
+    if (v == null || !Number.isFinite(Number(v))) return null;
+    const n = Number(v);
+    return n === Infinity ? Number.MAX_VALUE : n;
+  }
+
+  function compareTagRows(a, b) {
+    const key = tagSort.key;
+    const dir = tagSort.dir === "asc" ? 1 : -1;
+    const va = sortValue(a, key);
+    const vb = sortValue(b, key);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1; // empty metrics sink
+    if (vb == null) return -1;
+    if (typeof va === "string" || typeof vb === "string") {
+      return dir * String(va).localeCompare(String(vb), undefined, { sensitivity: "base" });
+    }
+    if (va !== vb) return dir * (va < vb ? -1 : 1);
+    // stable tie-break: more trades first, then label
+    const na = a.n || 0;
+    const nb = b.n || 0;
+    if (na !== nb) return nb - na;
+    return String(a.label || a.tagId).localeCompare(String(b.label || b.tagId));
+  }
+
+  function syncTagSortHeaders() {
+    document.querySelectorAll("#ordersTagStatsTable th.orders-sort-th").forEach((th) => {
+      const key = th.dataset.sort;
+      const active = key === tagSort.key;
+      th.classList.toggle("sort-active", active);
+      th.classList.toggle("sort-asc", active && tagSort.dir === "asc");
+      th.classList.toggle("sort-desc", active && tagSort.dir === "desc");
+      th.setAttribute("aria-sort", active ? (tagSort.dir === "asc" ? "ascending" : "descending") : "none");
+    });
+  }
+
+  function setTagSort(key) {
+    if (!key) return;
+    if (tagSort.key === key) {
+      tagSort.dir = tagSort.dir === "asc" ? "desc" : "asc";
+    } else {
+      tagSort.key = key;
+      tagSort.dir = key === "label" ? "asc" : "desc";
+    }
+    renderTagStats();
+  }
+
   function renderTagStats() {
     const body = $("ordersTagStatsBody");
     if (!body) return;
@@ -263,6 +317,8 @@
         : { rows: [], untagged: { tagId: UNTAGGED_ID, n: 0 } };
 
     const rows = [...(stats.rows || []), stats.untagged].filter(Boolean);
+    rows.sort(compareTagRows);
+    syncTagSortHeaders();
 
     for (const row of rows) {
       const tr = document.createElement("tr");
@@ -504,6 +560,13 @@
     $("ordersTagFilterClear")?.addEventListener("click", () => {
       activeTagId = null;
       renderAll();
+    });
+
+    $("ordersTagStatsTable")?.querySelector("thead")?.addEventListener("click", (e) => {
+      const th = e.target.closest("th.orders-sort-th[data-sort]");
+      if (!th) return;
+      e.preventDefault();
+      setTagSort(th.dataset.sort);
     });
 
     $("ordersTagStatsBody")?.addEventListener("click", (e) => {

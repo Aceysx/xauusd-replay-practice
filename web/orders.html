@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>订单管理</title>
-  <link rel="stylesheet" href="/styles.css?v=24" />
+  <link rel="stylesheet" href="/styles.css?v=25" />
 </head>
 <body class="orders-page">
   <header class="report-page-header orders-page-header">
@@ -43,17 +43,17 @@
           <table class="orders-stats-table" id="ordersTagStatsTable">
             <thead>
               <tr>
-                <th data-i18n="ordersPage.col.tag">标签</th>
-                <th data-i18n="ordersPage.col.n">笔数</th>
-                <th data-i18n="ordersPage.col.winRate">胜率</th>
-                <th data-i18n="ordersPage.col.totalNet">净盈亏</th>
-                <th data-i18n="ordersPage.col.expected">期望</th>
-                <th data-i18n="ordersPage.col.payoff">盈亏比</th>
-                <th data-i18n="ordersPage.col.pf">盈利因子</th>
-                <th data-i18n="ordersPage.col.avgWin">均盈</th>
-                <th data-i18n="ordersPage.col.avgLoss">均亏</th>
-                <th data-i18n="ordersPage.col.avgMfe">均MFE</th>
-                <th data-i18n="ordersPage.col.avgMae">均MAE</th>
+                <th class="orders-sort-th" data-sort="label" data-i18n="ordersPage.col.tag">标签</th>
+                <th class="orders-sort-th" data-sort="n" data-i18n="ordersPage.col.n">笔数</th>
+                <th class="orders-sort-th" data-sort="winRate" data-i18n="ordersPage.col.winRate">胜率</th>
+                <th class="orders-sort-th" data-sort="totalNet" data-i18n="ordersPage.col.totalNet">净盈亏</th>
+                <th class="orders-sort-th" data-sort="expectedPayoff" data-i18n="ordersPage.col.expected">期望</th>
+                <th class="orders-sort-th" data-sort="payoffRatio" data-i18n="ordersPage.col.payoff">盈亏比</th>
+                <th class="orders-sort-th" data-sort="profitFactor" data-i18n="ordersPage.col.pf">盈利因子</th>
+                <th class="orders-sort-th" data-sort="avgWin" data-i18n="ordersPage.col.avgWin">均盈</th>
+                <th class="orders-sort-th" data-sort="avgLoss" data-i18n="ordersPage.col.avgLoss">均亏</th>
+                <th class="orders-sort-th" data-sort="avgMfe" data-i18n="ordersPage.col.avgMfe">均MFE</th>
+                <th class="orders-sort-th" data-sort="avgMae" data-i18n="ordersPage.col.avgMae">均MAE</th>
               </tr>
             </thead>
             <tbody id="ordersTagStatsBody"></tbody>
@@ -94,8 +94,8 @@
     </div>
   </main>
   <script>window.__API_BASE__ = "";</script>
-  <script src="/i18n.js?v=23"></script>
+  <script src="/i18n.js?v=24"></script>
   <script src="/order_stats.js?v=2"></script>
-  <script src="/orders_page.js?v=2"></script>
+  <script src="/orders_page.js?v=3"></script>
 </body>
 </html>
