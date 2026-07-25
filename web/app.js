@@ -2379,6 +2379,115 @@ function setOrdersImportMsg(msg) {
   el.hidden = !msg;
 }
 
+function findBarIndexInBars(bars, ts) {
+  if (!bars?.length) return -1;
+  if (ts <= bars[0].time) return 0;
+  const last = bars.length - 1;
+  if (ts >= bars[last].time) return last;
+  let lo = 0;
+  let hi = last;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (bars[mid].time <= ts) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+function barsForTradeWindow(bars, openTs, closeTs) {
+  if (!bars?.length || openTs == null || closeTs == null) return [];
+  const a = Math.min(openTs, closeTs);
+  const b = Math.max(openTs, closeTs);
+  const openIdx = findBarIndexInBars(bars, a);
+  const closeIdx = findBarIndexInBars(bars, b);
+  if (openIdx < 0 || closeIdx < openIdx) return [];
+  return bars.slice(openIdx, closeIdx + 1);
+}
+
+/** 不污染图表缓存；固定用 5m 估算持仓期极值 */
+async function fetchBarsForExcursion(startDate, endDate) {
+  const q = {
+    start: startDate,
+    end: endDate,
+    tf: "5m",
+  };
+  const res = await fetch(`${apiUrl("/api/bars")}?${new URLSearchParams(q)}`);
+  if (!res.ok) throw new Error(t("error.loadBars"));
+  const data = await res.json();
+  return Array.isArray(data.bars) ? data.bars : [];
+}
+
+function listDateKeysInclusive(startDate, endDate) {
+  const out = [];
+  let t = Date.parse(`${startDate}T00:00:00.000Z`);
+  const end = Date.parse(`${endDate}T00:00:00.000Z`);
+  if (!Number.isFinite(t) || !Number.isFinite(end) || t > end) return out;
+  while (t <= end) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+    t += 86400000;
+  }
+  return out;
+}
+
+async function fetchBarsRangeChunked(startDate, endDate) {
+  const days = listDateKeysInclusive(startDate, endDate);
+  if (!days.length) return [];
+  const chunkSize = 45;
+  const map = new Map();
+  for (let i = 0; i < days.length; i += chunkSize) {
+    const slice = days.slice(i, i + chunkSize);
+    const bars = await fetchBarsForExcursion(slice[0], slice[slice.length - 1]);
+    for (const b of bars) map.set(b.time, b);
+  }
+  return [...map.values()].sort((a, b) => a.time - b.time);
+}
+
+function applyExcursionToRecord(rec, bars) {
+  const windowBars = barsForTradeWindow(bars, rec.open_ts, rec.close_ts);
+  if (!windowBars.length) {
+    rec.max_float_profit = rec.max_float_profit ?? 0;
+    rec.max_float_loss = rec.max_float_loss ?? 0;
+    rec.excursion_ready = true;
+    return false;
+  }
+  const { mfe, mae } = computeExcursionFromBars(
+    {
+      direction: rec.direction,
+      entry: rec.entry,
+      lots: rec.lots ?? LOTS,
+    },
+    windowBars
+  );
+  rec.max_float_profit = mfe;
+  rec.max_float_loss = mae;
+  rec.excursion_ready = true;
+  return true;
+}
+
+function recordsNeedingExcursion(records) {
+  return (records || []).filter(
+    (r) => r && r.imported && r.excursion_ready !== true && r.open_ts != null && r.close_ts != null
+  );
+}
+
+async function fillExcursionsForRecords(records) {
+  const pending = recordsNeedingExcursion(records);
+  if (!pending.length) return { filled: 0 };
+  let minTs = Infinity;
+  let maxTs = -Infinity;
+  for (const r of pending) {
+    minTs = Math.min(minTs, r.open_ts, r.close_ts);
+    maxTs = Math.max(maxTs, r.open_ts, r.close_ts);
+  }
+  const bars = await fetchBarsRangeChunked(barDateKey(minTs), barDateKey(maxTs));
+  let filled = 0;
+  for (const r of pending) {
+    if (applyExcursionToRecord(r, bars)) filled += 1;
+    else filled += 1; // 无 K 线也标记完成，避免反复重试
+  }
+  return { filled, bars: bars.length };
+}
+
 async function importOrdersFromFile(file) {
   if (!file) return;
   setOrdersImportMsg("");
@@ -2389,6 +2498,23 @@ async function importOrdersFromFile(file) {
     renderStatement();
     updateRrOverlay();
     updateChart({ preserveView: true });
+
+    let excursionMsg = "";
+    const pending = recordsNeedingExcursion(state.orderRecords);
+    if (pending.length) {
+      setOrdersImportMsg(t("orders.import.computingExcursion"));
+      try {
+        const { filled } = await fillExcursionsForRecords(pending);
+        renderStatement();
+        excursionMsg = ` · ${t("orders.import.excursionDone", { n: filled })}`;
+      } catch (e) {
+        console.warn("fill excursions failed", e);
+        excursionMsg = ` · ${t("orders.import.excursionFailed", {
+          msg: e?.message || e,
+        })}`;
+      }
+    }
+
     try {
       localStorage.setItem(PRACTICE_STORAGE_KEY, JSON.stringify(buildPracticeSnapshot()));
     } catch (e) {
@@ -2402,7 +2528,7 @@ async function importOrdersFromFile(file) {
         skippedDup,
         skippedNonXau,
         skippedBad,
-      })
+      }) + excursionMsg
     );
   } catch (e) {
     console.warn("import orders csv failed", e);
