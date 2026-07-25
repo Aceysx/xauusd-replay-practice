@@ -143,6 +143,7 @@ function profitUsd(dir, entry, exitPx, lots = LOTS) {
 function barDateKey(ts) {
   return new Date(ts * 1000).toISOString().slice(0, 10);
 }
+if (typeof window !== "undefined") window.barDateKey = barDateKey;
 
 /** 回放进度对应的时间落在哪根 K 线上（取 time <= ts 的最后一根） */
 function findBarIndexByTime(ts) {
@@ -2933,71 +2934,193 @@ function tick(now) {
 }
 
 function computeSessionStats() {
-  const records = [...state.orderRecords].reverse();
-  if (!records.length) return null;
+  if (typeof computeMt5Report !== "function") return null;
+  return computeMt5Report(state.orderRecords);
+}
 
-  let equity = 0;
-  let peak = 0;
-  let maxDd = 0;
-  let wins = 0;
-  let sumWin = 0;
-  let sumLoss = 0;
-  let maxConsecLoss = 0;
-  let consecLoss = 0;
-  let rrSum = 0;
-  let rrCount = 0;
-  const daily = new Map();
+function fmtSigned(v, digits = 2) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const s = Math.abs(v).toFixed(digits);
+  if (v > 0) return `+${s}`;
+  if (v < 0) return `-${s}`;
+  return (0).toFixed(digits);
+}
 
-  for (const r of records) {
-    equity += r.net;
-    peak = Math.max(peak, equity);
-    maxDd = Math.max(maxDd, peak - equity);
-    if (r.net > 0) {
-      wins += 1;
-      sumWin += r.net;
-      consecLoss = 0;
-    } else {
-      sumLoss += r.net;
-      consecLoss += 1;
-      maxConsecLoss = Math.max(maxConsecLoss, consecLoss);
-    }
-    if (r.sl != null && r.tp != null) {
-      const risk = Math.abs(r.entry - r.sl);
-      const reward = Math.abs(r.tp - r.entry);
-      if (risk >= 0.01) {
-        rrSum += reward / risk;
-        rrCount += 1;
-      }
-    }
-    const day = barDateKey(r.close_ts);
-    daily.set(day, (daily.get(day) || 0) + r.net);
+function pnlClass(v) {
+  if (v == null || !Number.isFinite(v) || v === 0) return "";
+  return v > 0 ? "pnl-pos" : "pnl-neg";
+}
+
+let equityChartApi = null;
+let equitySeriesApi = null;
+let equityResizeObs = null;
+
+function destroyEquityChart() {
+  if (equityResizeObs) {
+    equityResizeObs.disconnect();
+    equityResizeObs = null;
   }
+  if (equityChartApi) {
+    try {
+      equityChartApi.remove();
+    } catch (_) {}
+  }
+  equityChartApi = null;
+  equitySeriesApi = null;
+  const el = $("equityChart");
+  if (el) el.innerHTML = "";
+}
 
-  const n = records.length;
-  const losses = n - wins;
-  const avgWin = wins ? sumWin / wins : 0;
-  const avgLoss = losses ? sumLoss / losses : 0;
-  const profitFactor =
-    sumLoss < 0 ? sumWin / Math.abs(sumLoss) : sumWin > 0 ? Infinity : 0;
+function renderEquityCurve(report) {
+  const el = $("equityChart");
+  if (!el || typeof LightweightCharts === "undefined") return;
+  destroyEquityChart();
+  const curve = report?.equityCurve || [];
+  if (!curve.length) return;
 
-  return {
-    totalNet: equity,
-    n,
-    wins,
-    winRate: (100 * wins) / n,
-    maxDd,
-    avgWin,
-    avgLoss,
-    profitFactor,
-    maxConsecLoss,
-    avgRr: rrCount ? rrSum / rrCount : null,
-    daily: [...daily.entries()].sort((a, b) => b[0].localeCompare(a[0])),
+  equityChartApi = LightweightCharts.createChart(el, {
+    width: el.clientWidth || 640,
+    height: el.clientHeight || 260,
+    layout: {
+      background: { color: "#0f1115" },
+      textColor: "#8b95a8",
+    },
+    grid: {
+      vertLines: { color: "rgba(255,255,255,0.04)" },
+      horzLines: { color: "rgba(255,255,255,0.06)" },
+    },
+    rightPriceScale: { borderVisible: false },
+    timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  });
+  equitySeriesApi = equityChartApi.addAreaSeries({
+    lineColor: "#3dd68c",
+    topColor: "rgba(61, 214, 140, 0.35)",
+    bottomColor: "rgba(61, 214, 140, 0.02)",
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: true,
+  });
+
+  // 用成交序号作横轴，避免重复时间戳；映射为 unix 秒序列
+  const base = 1_700_000_000;
+  const data = curve.map((p) => ({
+    time: base + p.index,
+    value: p.equity,
+  }));
+  equitySeriesApi.setData(data);
+  equityChartApi.timeScale().fitContent();
+
+  const resize = () => {
+    if (!equityChartApi || !el.isConnected) return;
+    equityChartApi.applyOptions({
+      width: el.clientWidth,
+      height: el.clientHeight || 260,
+    });
   };
+  equityResizeObs = new ResizeObserver(resize);
+  equityResizeObs.observe(el);
+  requestAnimationFrame(resize);
+}
+
+function buildMt5ReportRows(s) {
+  const f = typeof formatMt5Number === "function" ? formatMt5Number : (v, d = 2) =>
+    v == null || !Number.isFinite(v) ? "—" : v === Infinity ? "∞" : v.toFixed(d);
+  const pct = (v) => (v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(2)}%`);
+  const maxDdText = `${f(s.maxDrawdown)} (${pct(s.maxDrawdownPct)})`;
+  const relDdText = `${pct(s.relativeDrawdownPct)} (${f(s.relativeDrawdownAmount)})`;
+  const sellText = `${s.sellN} (${pct(s.sellWinRate)})`;
+  const buyText = `${s.buyN} (${pct(s.buyWinRate)})`;
+  const winText = `${s.wins} (${pct(s.winRate)})`;
+  const lossText = `${s.losses} (${pct(s.lossRate)})`;
+  const consecWinText = `${s.maxConsecWins} (${fmtSigned(s.maxConsecWinsSum)})`;
+  const consecLossText = `${s.maxConsecLosses} (${fmtSigned(s.maxConsecLossesSum)})`;
+  const maxProfitStreak = `${fmtSigned(s.maxConsecProfitSum)} (${s.maxConsecProfitCount})`;
+  const maxLossStreak = `${fmtSigned(s.maxConsecLossSum)} (${s.maxConsecLossCount})`;
+
+  return [
+    { section: true, label: t("report.title") },
+    { label: t("report.totalNet"), value: fmtSigned(s.totalNet), cls: pnlClass(s.totalNet) },
+    { label: t("report.grossProfit"), value: fmtSigned(s.grossProfit), cls: "pnl-pos" },
+    { label: t("report.grossLoss"), value: fmtSigned(s.grossLoss), cls: "pnl-neg" },
+    { label: t("report.profitFactor"), value: f(s.profitFactor) },
+    { label: t("report.expectedPayoff"), value: fmtSigned(s.expectedPayoff) },
+    {
+      label: t("report.recoveryFactor"),
+      value: s.recoveryFactor == null ? "—" : f(s.recoveryFactor),
+    },
+    { label: t("report.sharpe"), value: s.sharpe == null ? "—" : f(s.sharpe) },
+    { section: true, label: t("report.balanceDd") },
+    { label: t("report.absDd"), value: f(s.absDrawdown) },
+    { label: t("report.maxDd"), value: maxDdText },
+    { label: t("report.relDd"), value: relDdText },
+    { section: true, label: t("report.totalTrades") },
+    { label: t("report.totalTrades"), value: String(s.n) },
+    { label: t("report.shortTrades"), value: sellText },
+    { label: t("report.longTrades"), value: buyText },
+    { label: t("report.profitTrades"), value: winText, cls: "pnl-pos" },
+    { label: t("report.lossTrades"), value: lossText, cls: "pnl-neg" },
+    { label: t("report.largestProfit"), value: fmtSigned(s.largestWin), cls: "pnl-pos" },
+    { label: t("report.largestLoss"), value: fmtSigned(s.largestLoss), cls: "pnl-neg" },
+    { label: t("report.avgProfit"), value: fmtSigned(s.avgWin), cls: "pnl-pos" },
+    { label: t("report.avgLoss"), value: fmtSigned(s.avgLoss), cls: "pnl-neg" },
+    { label: t("report.maxConsecWins"), value: consecWinText },
+    { label: t("report.maxConsecLosses"), value: consecLossText },
+    { label: t("report.maxConsecProfit"), value: maxProfitStreak },
+    { label: t("report.maxConsecLossAmt"), value: maxLossStreak },
+    { label: t("report.avgConsecWins"), value: f(s.avgConsecWins, 0) },
+    { label: t("report.avgConsecLosses"), value: f(s.avgConsecLosses, 0) },
+  ];
+}
+
+function renderOrdersReportTable(report) {
+  const wrap = $("ordersReportTable");
+  if (!wrap) return;
+  if (!report) {
+    wrap.innerHTML = `<p class="mt5-report-empty">${t("report.empty")}</p>`;
+    return;
+  }
+  const rows = buildMt5ReportRows(report)
+    .map((row) => {
+      if (row.section) {
+        return `<tr class="mt5-section"><th colspan="2">${row.label}</th></tr>`;
+      }
+      return `<tr><th>${row.label}</th><td class="${row.cls || ""}">${row.value}</td></tr>`;
+    })
+    .join("");
+  wrap.innerHTML = `<table class="mt5-report-table"><tbody>${rows}</tbody></table>`;
+}
+
+function openOrdersReport() {
+  const dlg = $("ordersReportDialog");
+  if (!dlg) return;
+  const report = computeSessionStats();
+  if (!report) {
+    alert(t("report.empty"));
+    return;
+  }
+  renderOrdersReportTable(report);
+  if (typeof applyI18n === "function") applyI18n();
+  dlg.showModal();
+  requestAnimationFrame(() => renderEquityCurve(report));
+}
+
+function closeOrdersReport() {
+  const dlg = $("ordersReportDialog");
+  destroyEquityChart();
+  dlg?.close();
+}
+
+function syncOrdersReportButton() {
+  const btn = $("btnOrdersReport");
+  if (!btn) return;
+  btn.disabled = !state.orderRecords.length;
 }
 
 function renderSessionStats() {
   const grid = $("sessionStatsGrid");
   if (!grid) return;
+  syncOrdersReportButton();
   const s = computeSessionStats();
   if (!s) {
     grid.className = "stat-grid empty";
@@ -3014,7 +3137,7 @@ function renderSessionStats() {
         ? "—"
         : s.profitFactor.toFixed(2);
   const rr = s.avgRr != null ? `1:${s.avgRr.toFixed(2)}` : "—";
-  const dailyText = s.daily
+  const dailyText = (s.daily || [])
     .slice(0, 5)
     .map(([d, v]) => `${d} ${v >= 0 ? "+" : ""}${v.toFixed(2)}`)
     .join(" · ");
@@ -3028,7 +3151,7 @@ function renderSessionStats() {
     <span class="stat-item pnl-neg"><strong>${t("stat.avgLoss")}</strong>${s.avgLoss.toFixed(2)}</span>
     <span class="stat-item"><strong>${t("stat.profitFactor")}</strong>${pf}</span>
     <span class="stat-item"><strong>${t("stat.plannedRr")}</strong>${rr}</span>
-    <span class="stat-item"><strong>${t("stat.consecLoss", { n: s.maxConsecLoss })}</strong></span>
+    <span class="stat-item"><strong>${t("stat.consecLoss", { n: s.maxConsecLosses })}</strong></span>
     ${dailyText ? `<span class="stat-daily"><strong>${t("stat.daily")}</strong>${dailyText}</span>` : ""}
   `;
 }
@@ -3292,6 +3415,12 @@ function bindEvents() {
     e.target.value = "";
     if (file) void importOrdersFromFile(file);
   });
+  $("btnOrdersReport")?.addEventListener("click", () => openOrdersReport());
+  $("ordersReportClose")?.addEventListener("click", () => closeOrdersReport());
+  $("ordersReportDialog")?.addEventListener("click", (e) => {
+    if (e.target === $("ordersReportDialog")) closeOrdersReport();
+  });
+  $("ordersReportDialog")?.addEventListener("close", () => destroyEquityChart());
   $("screenshotPreviewClose")?.addEventListener("click", () => {
     $("screenshotPreview")?.close();
   });
