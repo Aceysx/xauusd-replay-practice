@@ -1760,11 +1760,15 @@ async function persistOrderRecordsToDisk(opts = {}) {
     orderRecords: state.orderRecords,
     nextOrderId: state.nextOrderId,
   };
+  const body = JSON.stringify(payload);
+  // keepalive 对 body 大小有限制（约 64KB），导入多笔后会静默失败
+  const useKeepalive =
+    !!opts.keepalive && new TextEncoder().encode(body).length < 60_000;
   const res = await fetch(apiUrl("/api/orders"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    keepalive: !!opts.keepalive,
+    body,
+    keepalive: useKeepalive,
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -2384,7 +2388,13 @@ async function importOrdersFromFile(file) {
     renderStatement();
     updateRrOverlay();
     updateChart({ preserveView: true });
-    savePracticeStateNow();
+    try {
+      localStorage.setItem(PRACTICE_STORAGE_KEY, JSON.stringify(buildPracticeSnapshot()));
+    } catch (e) {
+      console.warn("保存练习数据失败", e);
+    }
+    clearTimeout(orderRecordsSaveTimer);
+    await persistOrderRecordsToDisk();
     setOrdersImportMsg(
       t("orders.import.result", {
         added,
