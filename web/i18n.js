@@ -569,6 +569,8 @@ function applyI18n() {
     el.textContent = t(el.dataset.i18n);
   });
   document.querySelectorAll("[data-i18n-title]").forEach((el) => {
+    // data-i18n-title on <html> only drives document.title, not the native hover tooltip
+    if (el === document.documentElement) return;
     el.title = t(el.dataset.i18nTitle);
   });
   document.querySelectorAll("[data-i18n-aria]").forEach((el) => {
@@ -576,6 +578,7 @@ function applyI18n() {
   });
   const titleKey = document.documentElement.dataset.i18nTitle;
   if (titleKey) document.title = t(titleKey);
+  document.documentElement.removeAttribute("title");
 }
 
 function setLocale(locale) {
