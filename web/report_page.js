@@ -5,6 +5,8 @@
 
   let equityChartApi = null;
   let equityResizeObs = null;
+  /** @type {Array} */
+  let allRecords = [];
 
   function $(id) {
     return document.getElementById(id);
@@ -37,6 +39,28 @@
 
   function pct(v) {
     return v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(2)}%`;
+  }
+
+  function recordTs(r) {
+    const t = Number(r?.close_ts ?? r?.open_ts);
+    return Number.isFinite(t) ? t : null;
+  }
+
+  function tsToDateKey(ts) {
+    if (ts == null) return "";
+    return new Date(ts * 1000).toISOString().slice(0, 10);
+  }
+
+  function dateKeyToStartTs(dateStr) {
+    if (!dateStr) return null;
+    const ms = Date.parse(`${dateStr}T00:00:00.000Z`);
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+  }
+
+  function dateKeyToEndTs(dateStr) {
+    if (!dateStr) return null;
+    const ms = Date.parse(`${dateStr}T23:59:59.999Z`);
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
   }
 
   function destroyEquityChart() {
@@ -149,6 +173,7 @@
       { label: t("report.grossProfit"), value: fmtSigned(s.grossProfit), cls: "pnl-pos" },
       { label: t("report.grossLoss"), value: fmtSigned(s.grossLoss), cls: "pnl-neg" },
       { label: t("report.profitFactor"), value: fNum(s.profitFactor) },
+      { label: t("report.payoffRatio"), value: payoffRatioText(s) },
       { label: t("report.expectedPayoff"), value: fmtSigned(s.expectedPayoff) },
       {
         label: t("report.recoveryFactor"),
@@ -212,6 +237,23 @@
     ];
   }
 
+  /** 盈亏比 = 平均盈利 / |平均亏损| */
+  function payoffRatio(s) {
+    const win = Number(s?.avgWin);
+    const loss = Math.abs(Number(s?.avgLoss));
+    if (!Number.isFinite(win) || !Number.isFinite(loss) || loss < 1e-9) {
+      return win > 0 ? Infinity : null;
+    }
+    return win / loss;
+  }
+
+  function payoffRatioText(s) {
+    const r = payoffRatio(s);
+    if (r == null) return "—";
+    if (r === Infinity) return "∞";
+    return r.toFixed(2);
+  }
+
   function renderTable(report) {
     const wrap = $("ordersReportTable");
     if (!wrap) return;
@@ -256,6 +298,7 @@
         cls: s.winRate >= 50 ? "pnl-pos" : "",
       },
       { label: t("report.profitFactor"), value: pf },
+      { label: t("report.payoffRatio"), value: payoffRatioText(s) },
       {
         label: t("report.maxDd"),
         value: fNum(s.maxDrawdown),
@@ -282,18 +325,107 @@
     $("reportContent")?.classList.toggle("hidden", empty);
   }
 
-  function renderReport(records) {
+  function filteredRecords() {
+    const fromEl = $("reportDateFrom");
+    const toEl = $("reportDateTo");
+    const fromTs = dateKeyToStartTs(fromEl?.value || "");
+    const toTs = dateKeyToEndTs(toEl?.value || "");
+    return allRecords.filter((r) => {
+      const ts = recordTs(r);
+      if (ts == null) return false;
+      if (fromTs != null && ts < fromTs) return false;
+      if (toTs != null && ts > toTs) return false;
+      return true;
+    });
+  }
+
+  function updateFilterCount(n, total) {
+    const el = $("reportFilterCount");
+    if (!el) return;
+    el.textContent = t("report.filterCount", { n, total });
+  }
+
+  function renderReport() {
+    const records = filteredRecords();
+    updateFilterCount(records.length, allRecords.length);
     const report =
-      typeof computeMt5Report === "function" ? computeMt5Report(records || []) : null;
+      typeof computeMt5Report === "function" ? computeMt5Report(records) : null;
     if (!report) {
       destroyEquityChart();
       showEmpty(true);
+      const empty = $("reportEmpty");
+      if (empty) {
+        empty.textContent = allRecords.length
+          ? t("report.filterEmpty")
+          : t("report.empty");
+      }
       return;
     }
     showEmpty(false);
     renderKpi(report);
     renderTable(report);
     requestAnimationFrame(() => renderEquityCurve(report));
+  }
+
+  function syncFilterBounds() {
+    const filter = $("reportFilter");
+    const fromEl = $("reportDateFrom");
+    const toEl = $("reportDateTo");
+    if (!filter || !fromEl || !toEl) return;
+
+    if (!allRecords.length) {
+      filter.hidden = true;
+      fromEl.value = "";
+      toEl.value = "";
+      return;
+    }
+
+    let minTs = Infinity;
+    let maxTs = -Infinity;
+    for (const r of allRecords) {
+      const ts = recordTs(r);
+      if (ts == null) continue;
+      minTs = Math.min(minTs, ts);
+      maxTs = Math.max(maxTs, ts);
+    }
+    if (!Number.isFinite(minTs) || !Number.isFinite(maxTs)) {
+      filter.hidden = true;
+      return;
+    }
+
+    const minDate = tsToDateKey(minTs);
+    const maxDate = tsToDateKey(maxTs);
+    fromEl.min = minDate;
+    fromEl.max = maxDate;
+    toEl.min = minDate;
+    toEl.max = maxDate;
+    if (!fromEl.value) fromEl.value = minDate;
+    if (!toEl.value) toEl.value = maxDate;
+    if (fromEl.value < minDate) fromEl.value = minDate;
+    if (fromEl.value > maxDate) fromEl.value = maxDate;
+    if (toEl.value < minDate) toEl.value = minDate;
+    if (toEl.value > maxDate) toEl.value = maxDate;
+    filter.hidden = false;
+  }
+
+  function resetFilterRange() {
+    const fromEl = $("reportDateFrom");
+    const toEl = $("reportDateTo");
+    if (fromEl) fromEl.value = fromEl.min || "";
+    if (toEl) toEl.value = toEl.max || "";
+    renderReport();
+  }
+
+  function onFilterChange() {
+    const fromEl = $("reportDateFrom");
+    const toEl = $("reportDateTo");
+    if (fromEl && toEl && fromEl.value && toEl.value && fromEl.value > toEl.value) {
+      // 保持区间合法：以当前改动的一侧为准时，由浏览器顺序触发；这里交换
+      const tmp = fromEl.value;
+      fromEl.value = toEl.value;
+      toEl.value = tmp;
+    }
+    renderReport();
   }
 
   async function loadOrders() {
@@ -303,22 +435,30 @@
     return Array.isArray(data.orderRecords) ? data.orderRecords : [];
   }
 
+  function bindFilter() {
+    $("reportDateFrom")?.addEventListener("change", onFilterChange);
+    $("reportDateTo")?.addEventListener("change", onFilterChange);
+    $("reportFilterReset")?.addEventListener("click", resetFilterRange);
+  }
+
   window.onLocaleChange = function () {
     if (typeof applyI18n === "function") applyI18n();
-    if (window.__reportRecords) renderReport(window.__reportRecords);
+    renderReport();
   };
 
   async function init() {
     if (typeof initI18n === "function") initI18n();
     document.documentElement.dataset.i18nTitle = "report.pageTitle";
     if (typeof applyI18n === "function") applyI18n();
+    bindFilter();
     try {
-      const records = await loadOrders();
-      window.__reportRecords = records;
-      renderReport(records);
+      allRecords = await loadOrders();
+      syncFilterBounds();
+      renderReport();
     } catch (e) {
       console.warn("load orders for report failed", e);
-      window.__reportRecords = [];
+      allRecords = [];
+      syncFilterBounds();
       showEmpty(true);
       const empty = $("reportEmpty");
       if (empty) empty.textContent = e?.message || t("report.empty");

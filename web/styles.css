@@ -881,6 +881,65 @@ body.report-page {
   padding: 20px 0 40px;
   display: block;
 }
+.report-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.report-filter[hidden] {
+  display: none !important;
+}
+.report-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.report-date-input {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  min-width: 148px;
+}
+.report-date-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.report-filter-sep {
+  color: var(--muted);
+  padding-bottom: 8px;
+}
+.report-filter-reset {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.report-filter-reset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.report-filter-count {
+  margin-left: auto;
+  font-size: 12px;
+  padding-bottom: 8px;
+}
 .report-empty {
   margin: 64px auto;
   text-align: center;
@@ -896,7 +955,7 @@ body.report-page {
 }
 .report-kpi {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 12px;
 }
 .report-kpi-card {
@@ -917,16 +976,10 @@ body.report-page {
   text-overflow: ellipsis;
 }
 .report-kpi-value {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
-}
-.report-grid {
-  display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.2fr);
-  gap: 16px;
-  align-items: start;
 }
 .report-metrics-card,
 .report-equity-card {
@@ -936,29 +989,36 @@ body.report-page {
   padding: 16px;
   min-width: 0;
 }
+.report-metrics-card-full .mt5-report-table-wrap {
+  max-height: none;
+}
 .report-section-title {
   margin: 0 0 12px;
   font-size: 14px;
   font-weight: 700;
 }
 .report-equity-chart {
-  height: min(62vh, 520px);
-  min-height: 320px;
+  height: min(52vh, 460px);
+  min-height: 300px;
   border: none;
   background: #12161e;
+}
+@media (max-width: 1100px) {
+  .report-kpi {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 @media (max-width: 960px) {
   .report-kpi {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .report-grid {
-    grid-template-columns: 1fr;
-  }
   .report-equity-chart {
     height: 360px;
   }
-  .mt5-report-table-wrap {
-    max-height: none;
+  .report-filter-count {
+    margin-left: 0;
+    width: 100%;
+    padding-bottom: 0;
   }
 }
 @media (max-width: 640px) {
@@ -974,6 +1034,7 @@ body.report-page {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .report-kpi-value { font-size: 18px; }
+  .report-date-input { min-width: 0; width: 100%; }
 }
 .screenshot-pick {
   position: absolute;

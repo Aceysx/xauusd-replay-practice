@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>交易报告</title>
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <link rel="stylesheet" href="/styles.css?v=16" />
+  <link rel="stylesheet" href="/styles.css?v=17" />
 </head>
 <body class="report-page">
   <header class="report-page-header">
@@ -16,24 +16,34 @@
     </label>
   </header>
   <main class="report-page-main" id="reportPageMain">
+    <section class="report-filter" id="reportFilter" hidden>
+      <label class="report-filter-field">
+        <span data-i18n="report.filterFrom">开始日期</span>
+        <input type="date" id="reportDateFrom" class="report-date-input" />
+      </label>
+      <span class="report-filter-sep">–</span>
+      <label class="report-filter-field">
+        <span data-i18n="report.filterTo">结束日期</span>
+        <input type="date" id="reportDateTo" class="report-date-input" />
+      </label>
+      <button type="button" id="reportFilterReset" class="report-filter-reset" data-i18n="report.filterReset">重置</button>
+      <span class="muted report-filter-count" id="reportFilterCount"></span>
+    </section>
     <div id="reportEmpty" class="report-empty hidden" data-i18n="report.empty">暂无平仓记录</div>
     <div id="reportContent" class="report-content hidden">
       <section class="report-kpi" id="reportKpi" aria-label="KPI"></section>
-      <div class="report-grid">
-        <section class="report-metrics-card">
-          <h2 class="report-section-title" data-i18n="report.metricsTitle">绩效汇总</h2>
-          <div id="ordersReportTable" class="mt5-report-table-wrap"></div>
-        </section>
-        <section class="report-equity-card">
-          <h2 class="report-section-title" data-i18n="report.equityCurve">净值曲线</h2>
-          <div id="equityChart" class="mt5-equity-chart report-equity-chart"></div>
-        </section>
-      </div>
+      <section class="report-equity-card">
+        <h2 class="report-section-title" data-i18n="report.equityCurve">净值曲线</h2>
+        <div id="equityChart" class="mt5-equity-chart report-equity-chart"></div>
+      </section>
+      <section class="report-metrics-card report-metrics-card-full">
+        <div id="ordersReportTable" class="mt5-report-table-wrap"></div>
+      </section>
     </div>
   </main>
   <script>window.__API_BASE__ = "";</script>
-  <script src="/i18n.js?v=14"></script>
+  <script src="/i18n.js?v=15"></script>
   <script src="/order_stats.js?v=1"></script>
-  <script src="/report_page.js?v=1"></script>
+  <script src="/report_page.js?v=2"></script>
 </body>
 </html>
