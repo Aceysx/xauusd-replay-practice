@@ -46,7 +46,7 @@
 
 ### 01 · 回放主界面
 
-![回放主界面](docs/screenshots/img.png)
+![回放主界面](docs/screenshots/img1.png)
 
 ### 02 · 模拟开仓
 
@@ -79,7 +79,7 @@
 ## 快速开始
 
 ```bash
-git clone <你的仓库地址>
+git clone https://github.com/Aceysx/xauusd-replay-practice.git
 cd re-test
 pip install -r requirements.txt
 python3 -m src.server.replay_server
