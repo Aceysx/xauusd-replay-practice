@@ -709,6 +709,73 @@ body.resizing-panel {
   width: 120px;
   min-width: 100px;
 }
+.stmt-table .stmt-tags-cell {
+  min-width: 120px;
+  white-space: normal;
+  vertical-align: middle;
+  overflow: visible;
+}
+.stmt-tags {
+  position: relative;
+  display: inline-block;
+  max-width: 180px;
+}
+.stmt-tags-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.stmt-tags-summary::-webkit-details-marker { display: none; }
+.stmt-tags[open] .stmt-tags-summary {
+  border-color: var(--accent);
+}
+.stmt-tags-menu {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  top: calc(100% + 4px);
+  min-width: 140px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stmt-tags-menu.stmt-tags-menu-fixed {
+  position: fixed;
+  top: auto;
+}
+.stmt-tag-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.stmt-tag-option:hover {
+  background: rgba(91, 156, 245, 0.12);
+}
+.stmt-tag-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
 .stmt-table .stmt-input:focus {
   outline: none;
   border-color: var(--accent);

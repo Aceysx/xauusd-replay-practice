@@ -2211,12 +2211,42 @@ function computeOrderPoints(rec) {
   };
 }
 
+const ORDER_TAG_IDS = ["follow", "callback", "tf_15m", "tf_1h", "tf_4h", "tf_day"];
+
+const ORDER_TAG_I18N = {
+  follow: "tradeType.follow",
+  callback: "tradeType.callback",
+  tf_15m: "follow.15m",
+  tf_1h: "follow.1h",
+  tf_4h: "follow.4h",
+  tf_day: "follow.day",
+};
+
+function orderTagLabel(id) {
+  const key = ORDER_TAG_I18N[id];
+  return key ? t(key) : String(id);
+}
+
+function normalizeOrderTags(tags) {
+  const allowed = new Set(ORDER_TAG_IDS);
+  const seen = new Set();
+  const out = [];
+  for (const raw of Array.isArray(tags) ? tags : []) {
+    const id = String(raw ?? "").trim();
+    if (!id || !allowed.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return ORDER_TAG_IDS.filter((id) => seen.has(id));
+}
+
 function normalizeOrderRecord(rec) {
   if (!rec) return rec;
   rec.entry_reason = String(rec.entry_reason ?? "");
   rec.tp_reason = String(rec.tp_reason ?? "");
   rec.sl_reason = String(rec.sl_reason ?? "");
   rec.notes = String(rec.notes ?? "");
+  rec.tags = normalizeOrderTags(rec.tags);
   rec.lots = rec.lots ?? LOTS;
   rec.max_float_profit = rec.max_float_profit ?? 0;
   rec.max_float_loss = rec.max_float_loss ?? 0;
@@ -2326,6 +2356,7 @@ function parseBrokerDealsCsv(text) {
       tp_reason: "",
       sl_reason: "",
       notes: "",
+      tags: [],
       direction: type,
       open_time: fmtTime(openTs),
       open_ts: openTs,
@@ -2664,6 +2695,43 @@ function updateOrderField(id, field, value) {
   }
   normalizeOrderRecord(rec);
   savePracticeStateNow();
+}
+
+function toggleOrderTag(id, tagId, on) {
+  const rec = state.orderRecords.find((r) => String(r.id) === String(id));
+  if (!rec || !ORDER_TAG_IDS.includes(tagId)) return;
+  const set = new Set(normalizeOrderTags(rec.tags));
+  if (on) set.add(tagId);
+  else set.delete(tagId);
+  rec.tags = ORDER_TAG_IDS.filter((x) => set.has(x));
+  normalizeOrderRecord(rec);
+  const details = document.querySelector(`details.stmt-tags[data-order-id="${CSS.escape(String(id))}"]`);
+  if (details) {
+    const summary = details.querySelector(".stmt-tags-summary");
+    if (summary) summary.textContent = formatOrderTagsSummary(rec.tags);
+  }
+  savePracticeStateNow();
+}
+
+function formatOrderTagsSummary(tags) {
+  const list = normalizeOrderTags(tags);
+  if (!list.length) return t("table.tags.none");
+  return list.map(orderTagLabel).join(", ");
+}
+
+function renderOrderTagsCell(rec) {
+  const selected = new Set(rec.tags || []);
+  const options = ORDER_TAG_IDS.map((tagId) => {
+    const checked = selected.has(tagId) ? " checked" : "";
+    return `<label class="stmt-tag-option">
+      <input type="checkbox" data-action="order-tag" data-id="${escAttr(String(rec.id))}" data-tag="${escAttr(tagId)}"${checked} />
+      <span>${escAttr(orderTagLabel(tagId))}</span>
+    </label>`;
+  }).join("");
+  return `<details class="stmt-tags" data-order-id="${escAttr(String(rec.id))}">
+    <summary class="stmt-tags-summary">${escAttr(formatOrderTagsSummary(rec.tags))}</summary>
+    <div class="stmt-tags-menu" role="group" aria-label="${escAttr(t("table.tags"))}">${options}</div>
+  </details>`;
 }
 
 function screenshotUrl(filename) {
@@ -3019,6 +3087,7 @@ function appendOrderRecord(exitPx, reason, bar) {
       tp_reason: "",
       sl_reason: "",
       notes: "",
+      tags: [],
       direction: pos.direction,
       open_time: fmtTime(pos.openTime),
       open_ts: pos.openTime,
@@ -3272,6 +3341,7 @@ function renderStatement() {
       <td class="stmt-readonly">${closePx}</td>
       <td class="${pnlCls}">${r.net >= 0 ? "+" : ""}${(r.net ?? 0).toFixed(2)}</td>
       <td class="${exitCls}">${tExit(r.exit)}</td>
+      <td class="stmt-tags-cell">${renderOrderTagsCell(r)}</td>
       <td><input type="text" class="stmt-input stmt-text stmt-notes" data-field="notes" data-id="${r.id}" value="${escAttr(r.notes)}" placeholder="${escAttr(t("table.notes.placeholder"))}" /></td>
       <td class="stmt-actions">
         <button type="button" class="btn-order-del" data-action="delete" data-id="${r.id}" title="${t("orders.delete.title")}" aria-label="${t("orders.delete.title")}">×</button>
@@ -3404,12 +3474,49 @@ function bindEvents() {
   $("btnRandomStart")?.addEventListener("click", startRandomBacktest);
   $("btnResetData")?.addEventListener("click", () => void resetPracticeData());
   $("stmtBody")?.addEventListener("change", (e) => {
+    const tagCb = e.target.closest("input[data-action='order-tag']");
+    if (tagCb) {
+      toggleOrderTag(tagCb.dataset.id, tagCb.dataset.tag, tagCb.checked);
+      return;
+    }
     const el = e.target.closest("[data-field]");
     if (!el) return;
     const id = el.dataset.id;
     const field = el.dataset.field;
     if (!id || !field) return;
     updateOrderField(id, field, el.value);
+  });
+  $("stmtBody")?.addEventListener(
+    "toggle",
+    (e) => {
+      const details = e.target;
+      if (!(details instanceof HTMLDetailsElement) || !details.classList.contains("stmt-tags")) {
+        return;
+      }
+      const menu = details.querySelector(".stmt-tags-menu");
+      if (!menu) return;
+      if (!details.open) {
+        menu.classList.remove("stmt-tags-menu-fixed");
+        menu.style.left = "";
+        menu.style.top = "";
+        return;
+      }
+      document.querySelectorAll("details.stmt-tags[open]").forEach((d) => {
+        if (d !== details) d.open = false;
+      });
+      const rect = details.querySelector(".stmt-tags-summary")?.getBoundingClientRect();
+      if (!rect) return;
+      menu.classList.add("stmt-tags-menu-fixed");
+      menu.style.left = `${Math.round(rect.left)}px`;
+      menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+    },
+    true
+  );
+  document.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".stmt-tags")) return;
+    document.querySelectorAll("details.stmt-tags[open]").forEach((d) => {
+      d.open = false;
+    });
   });
   $("stmtBody")?.addEventListener(
     "blur",
@@ -3443,6 +3550,7 @@ function bindEvents() {
       openScreenshotPreview(preview.dataset.fullSrc || preview.currentSrc || preview.src);
       return;
     }
+    if (e.target.closest(".stmt-tags")) return;
     if (e.target.closest("input, button, a, select, textarea, label")) return;
     const tr = e.target.closest("tr[data-id]");
     if (!tr) return;
