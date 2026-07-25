@@ -28,7 +28,6 @@ async function loadPatternTypes() {
 }
 
 async function loadPatternTags() {
-  if (!patternApiReady()) return;
   const data = await patternFetch("/api/pattern-tags");
   patternState.tags = data.tags || [];
 }

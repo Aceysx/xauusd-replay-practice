@@ -2211,33 +2211,26 @@ function computeOrderPoints(rec) {
   };
 }
 
-const ORDER_TAG_IDS = ["follow", "callback", "tf_15m", "tf_1h", "tf_4h", "tf_day"];
-
-const ORDER_TAG_I18N = {
-  follow: "tradeType.follow",
-  callback: "tradeType.callback",
-  tf_15m: "follow.15m",
-  tf_1h: "follow.1h",
-  tf_4h: "follow.4h",
-  tf_day: "follow.day",
-};
+function orderTagsCatalog() {
+  if (typeof patternState === "undefined" || !Array.isArray(patternState.tags)) return [];
+  return patternState.tags;
+}
 
 function orderTagLabel(id) {
-  const key = ORDER_TAG_I18N[id];
-  return key ? t(key) : String(id);
+  const found = orderTagsCatalog().find((x) => x.id === id);
+  return found?.label || String(id);
 }
 
 function normalizeOrderTags(tags) {
-  const allowed = new Set(ORDER_TAG_IDS);
   const seen = new Set();
   const out = [];
   for (const raw of Array.isArray(tags) ? tags : []) {
     const id = String(raw ?? "").trim();
-    if (!id || !allowed.has(id) || seen.has(id)) continue;
+    if (!id || seen.has(id)) continue;
     seen.add(id);
     out.push(id);
   }
-  return ORDER_TAG_IDS.filter((id) => seen.has(id));
+  return out;
 }
 
 function normalizeOrderRecord(rec) {
@@ -2699,13 +2692,26 @@ function updateOrderField(id, field, value) {
 
 function toggleOrderTag(id, tagId, on) {
   const rec = state.orderRecords.find((r) => String(r.id) === String(id));
-  if (!rec || !ORDER_TAG_IDS.includes(tagId)) return;
+  const tid = String(tagId ?? "").trim();
+  if (!rec || !tid) return;
+  const catalogIds = new Set(orderTagsCatalog().map((x) => x.id));
+  if (on && !catalogIds.has(tid)) return;
   const set = new Set(normalizeOrderTags(rec.tags));
-  if (on) set.add(tagId);
-  else set.delete(tagId);
-  rec.tags = ORDER_TAG_IDS.filter((x) => set.has(x));
+  if (on) set.add(tid);
+  else set.delete(tid);
+  // keep catalog order, then any leftover ids
+  const ordered = [];
+  for (const tg of orderTagsCatalog()) {
+    if (set.has(tg.id)) ordered.push(tg.id);
+  }
+  for (const x of set) {
+    if (!ordered.includes(x)) ordered.push(x);
+  }
+  rec.tags = ordered;
   normalizeOrderRecord(rec);
-  const details = document.querySelector(`details.stmt-tags[data-order-id="${CSS.escape(String(id))}"]`);
+  const details = document.querySelector(
+    `details.stmt-tags[data-order-id="${CSS.escape(String(id))}"]`
+  );
   if (details) {
     const summary = details.querySelector(".stmt-tags-summary");
     if (summary) summary.textContent = formatOrderTagsSummary(rec.tags);
@@ -2720,14 +2726,20 @@ function formatOrderTagsSummary(tags) {
 }
 
 function renderOrderTagsCell(rec) {
+  const catalog = orderTagsCatalog();
+  if (!catalog.length) {
+    return `<div class="stmt-tags-empty muted">${t("table.tags.empty")} <a href="/patterns.html" class="stmt-tags-manage">${t("table.tags.manage")}</a></div>`;
+  }
   const selected = new Set(rec.tags || []);
-  const options = ORDER_TAG_IDS.map((tagId) => {
-    const checked = selected.has(tagId) ? " checked" : "";
-    return `<label class="stmt-tag-option">
-      <input type="checkbox" data-action="order-tag" data-id="${escAttr(String(rec.id))}" data-tag="${escAttr(tagId)}"${checked} />
-      <span>${escAttr(orderTagLabel(tagId))}</span>
+  const options = catalog
+    .map((tg) => {
+      const checked = selected.has(tg.id) ? " checked" : "";
+      return `<label class="stmt-tag-option">
+      <input type="checkbox" data-action="order-tag" data-id="${escAttr(String(rec.id))}" data-tag="${escAttr(tg.id)}"${checked} />
+      <span>${escAttr(tg.label || tg.id)}</span>
     </label>`;
-  }).join("");
+    })
+    .join("");
   return `<details class="stmt-tags" data-order-id="${escAttr(String(rec.id))}">
     <summary class="stmt-tags-summary">${escAttr(formatOrderTagsSummary(rec.tags))}</summary>
     <div class="stmt-tags-menu" role="group" aria-label="${escAttr(t("table.tags"))}">${options}</div>
@@ -3638,6 +3650,7 @@ async function init() {
     savePracticeStateNow();
   }
   await initPatternJournal();
+  renderStatement();
   await handlePatternRestoreFromUrl();
 }
 

@@ -758,6 +758,19 @@ body.resizing-panel {
   position: fixed;
   top: auto;
 }
+.stmt-tags-empty {
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 160px;
+  white-space: normal;
+}
+.stmt-tags-manage {
+  color: var(--accent);
+  text-decoration: none;
+}
+.stmt-tags-manage:hover {
+  text-decoration: underline;
+}
 .stmt-tag-option {
   display: flex;
   align-items: center;
