@@ -3508,9 +3508,10 @@ function bindEvents() {
       const menu = details.querySelector(".stmt-tags-menu");
       if (!menu) return;
       if (!details.open) {
-        menu.classList.remove("stmt-tags-menu-fixed");
+        menu.classList.remove("stmt-tags-menu-fixed", "stmt-tags-menu-up");
         menu.style.left = "";
         menu.style.top = "";
+        menu.style.maxHeight = "";
         return;
       }
       document.querySelectorAll("details.stmt-tags[open]").forEach((d) => {
@@ -3518,11 +3519,33 @@ function bindEvents() {
       });
       const rect = details.querySelector(".stmt-tags-summary")?.getBoundingClientRect();
       if (!rect) return;
+      const gap = 4;
+      const edge = 8;
+      const preferMax = 240;
+      const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gap - edge);
+      const spaceAbove = Math.max(0, rect.top - gap - edge);
+      const openUp = spaceBelow < 140 && spaceAbove > spaceBelow;
+      const avail = openUp ? spaceAbove : spaceBelow;
+      const maxH = Math.max(96, Math.min(preferMax, avail));
       menu.classList.add("stmt-tags-menu-fixed");
+      menu.classList.toggle("stmt-tags-menu-up", openUp);
       menu.style.left = `${Math.round(rect.left)}px`;
-      menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+      menu.style.maxHeight = `${Math.round(maxH)}px`;
+      if (openUp) {
+        menu.style.top = `${Math.round(rect.top - gap - maxH)}px`;
+      } else {
+        menu.style.top = `${Math.round(rect.bottom + gap)}px`;
+      }
     },
     true
+  );
+  $("stmtBody")?.addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.target.closest(".stmt-tags-menu")) return;
+      e.stopPropagation();
+    },
+    { passive: true }
   );
   document.addEventListener("pointerdown", (e) => {
     if (e.target.closest(".stmt-tags")) return;

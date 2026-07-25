@@ -762,7 +762,9 @@ body.resizing-panel {
 .stmt-tags-menu.stmt-tags-menu-fixed {
   position: fixed;
   top: auto;
-  max-height: min(240px, calc(100vh - 24px));
+  /* max-height set in JS from available viewport space */
+  max-height: none;
+  z-index: 80;
 }
 .stmt-tags-empty {
   font-size: 12px;
