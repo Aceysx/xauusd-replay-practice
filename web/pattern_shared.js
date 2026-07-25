@@ -136,6 +136,7 @@ function bindPatternTagPicker(root, onChange) {
 }
 
 function patternFmtTime(ts) {
+  if (typeof fmtDisplayTime === "function") return fmtDisplayTime(ts);
   if (!ts) return "—";
   const locale = typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN";
   const d = new Date(ts * 1000);
@@ -146,10 +147,10 @@ function patternFmtTime(ts) {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-    timeZone: "UTC",
+    timeZone: "Asia/Shanghai",
   });
-  const utc = typeof t === "function" ? t("time.utc") : "UTC";
-  return `${part} ${utc}`;
+  const zone = typeof t === "function" ? t("time.beijing") : "北京时间";
+  return `${part} ${zone}`;
 }
 
 function renderPatternTfBadges(caseObj) {

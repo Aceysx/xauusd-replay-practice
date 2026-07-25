@@ -90,6 +90,7 @@ function refreshUiLocale() {
 window.onLocaleChange = refreshUiLocale;
 
 function fmtTime(ts) {
+  if (typeof fmtDisplayTime === "function") return fmtDisplayTime(ts);
   if (!ts) return "—";
   const locale = typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN";
   const d = new Date(ts * 1000);
@@ -100,9 +101,9 @@ function fmtTime(ts) {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-    timeZone: "UTC",
+    timeZone: "Asia/Shanghai",
   });
-  return `${part} ${typeof t === "function" ? t("time.utc") : "UTC"}`;
+  return `${part} ${typeof t === "function" ? t("time.beijing") : "北京时间"}`;
 }
 
 function barFromClickParam(param) {
@@ -1716,6 +1717,16 @@ function initChart() {
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     timeScale: { timeVisible: true, secondsVisible: false, fixLeftEdge: false },
     rightPriceScale: { borderColor: "#2a3140" },
+    localization: {
+      locale: typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN",
+      timeFormatter: (time) => {
+        const ts = typeof time === "number" ? time : time?.timestamp ?? time;
+        if (typeof fmtDisplayTime === "function") {
+          return fmtDisplayTime(ts, { withZone: false });
+        }
+        return fmtTime(ts);
+      },
+    },
   });
   candleSeries = chart.addCandlestickSeries({
     upColor: "#3dd68c",
@@ -3414,8 +3425,8 @@ function renderStatement() {
       : `<button type="button" class="btn-shot-capture" data-action="screenshot" data-id="${r.id}">${t("table.screenshot.capture")}</button>`;
     tr.innerHTML = `
       <td>${r.id}</td>
-      <td>${r.open_time || "—"}</td>
-      <td>${r.close_time || "—"}</td>
+      <td>${r.open_ts != null ? fmtTime(r.open_ts) : r.open_time || "—"}</td>
+      <td>${r.close_ts != null ? fmtTime(r.close_ts) : r.close_time || "—"}</td>
       <td class="${dirCls}">${tDir(r.direction)}</td>
       <td class="stmt-readonly">${fmtLots(r.lots)}</td>
       <td class="stmt-readonly">${r.entry != null ? r.entry.toFixed(2) : "—"}</td>

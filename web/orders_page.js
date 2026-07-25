@@ -77,18 +77,25 @@
 
   function tsToDateKey(ts) {
     if (ts == null) return "";
+    if (typeof dateKeyInDisplayTz === "function") return dateKeyInDisplayTz(ts);
     return new Date(ts * 1000).toISOString().slice(0, 10);
   }
 
   function dateKeyToStartTs(dateStr) {
     if (!dateStr) return null;
-    const ms = Date.parse(`${dateStr}T00:00:00.000Z`);
+    if (typeof dateKeyToStartTsInDisplayTz === "function") {
+      return dateKeyToStartTsInDisplayTz(dateStr);
+    }
+    const ms = Date.parse(`${dateStr}T00:00:00+08:00`);
     return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
   }
 
   function dateKeyToEndTs(dateStr) {
     if (!dateStr) return null;
-    const ms = Date.parse(`${dateStr}T23:59:59.999Z`);
+    if (typeof dateKeyToEndTsInDisplayTz === "function") {
+      return dateKeyToEndTsInDisplayTz(dateStr);
+    }
+    const ms = Date.parse(`${dateStr}T23:59:59.999+08:00`);
     return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
   }
 
@@ -335,8 +342,16 @@
         r.lots != null && Number.isFinite(Number(r.lots)) ? String(r.lots) : "—";
       tr.innerHTML = `
         <td>${escAttr(String(r.id))}</td>
-        <td>${escAttr(r.open_time || "—")}</td>
-        <td>${escAttr(r.close_time || "—")}</td>
+        <td>${escAttr(
+          r.open_ts != null && typeof fmtDisplayTime === "function"
+            ? fmtDisplayTime(r.open_ts)
+            : r.open_time || "—"
+        )}</td>
+        <td>${escAttr(
+          r.close_ts != null && typeof fmtDisplayTime === "function"
+            ? fmtDisplayTime(r.close_ts)
+            : r.close_time || "—"
+        )}</td>
         <td class="${dirCls}">${tDir(r.direction)}</td>
         <td class="stmt-readonly">${escAttr(lots)}</td>
         <td class="stmt-readonly">${entry}</td>

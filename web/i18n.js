@@ -33,6 +33,7 @@ const LOCALES = {
     "barInfo.l": "低",
     "barInfo.c": "收",
     "time.utc": "UTC",
+    "time.beijing": "北京时间",
     "timeframe.label": "K 线周期",
     "loading.timeframe": "切换周期…",
     "btn.jump": "跳转回测",
@@ -331,6 +332,7 @@ const LOCALES = {
     "barInfo.l": "L",
     "barInfo.c": "C",
     "time.utc": "UTC",
+    "time.beijing": "Beijing",
     "timeframe.label": "Timeframe",
     "loading.timeframe": "Switching timeframe…",
     "btn.jump": "Jump to date",
@@ -614,6 +616,51 @@ function t(key, vars = {}) {
 
 function getLocale() {
   return currentLocale;
+}
+
+/** UI display timezone (China Standard Time, no DST). */
+const DISPLAY_TIMEZONE = "Asia/Shanghai";
+
+function displayTimeLocale() {
+  return currentLocale === "en" ? "en-GB" : "zh-CN";
+}
+
+/** YYYY-MM-DD in Asia/Shanghai */
+function dateKeyInDisplayTz(ts) {
+  if (ts == null || !Number.isFinite(Number(ts))) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: DISPLAY_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(Number(ts) * 1000));
+}
+
+function dateKeyToStartTsInDisplayTz(dateStr) {
+  if (!dateStr) return null;
+  const ms = Date.parse(`${dateStr}T00:00:00+08:00`);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+function dateKeyToEndTsInDisplayTz(dateStr) {
+  if (!dateStr) return null;
+  const ms = Date.parse(`${dateStr}T23:59:59.999+08:00`);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+function fmtDisplayTime(ts, { withZone = true } = {}) {
+  if (ts == null || !Number.isFinite(Number(ts)) || !Number(ts)) return "—";
+  const part = new Date(Number(ts) * 1000).toLocaleString(displayTimeLocale(), {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: DISPLAY_TIMEZONE,
+  });
+  if (!withZone) return part;
+  return `${part} ${t("time.beijing")}`;
 }
 
 function applyI18n() {

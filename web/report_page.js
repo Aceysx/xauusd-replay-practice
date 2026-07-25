@@ -51,18 +51,25 @@
 
   function tsToDateKey(ts) {
     if (ts == null) return "";
+    if (typeof dateKeyInDisplayTz === "function") return dateKeyInDisplayTz(ts);
     return new Date(ts * 1000).toISOString().slice(0, 10);
   }
 
   function dateKeyToStartTs(dateStr) {
     if (!dateStr) return null;
-    const ms = Date.parse(`${dateStr}T00:00:00.000Z`);
+    if (typeof dateKeyToStartTsInDisplayTz === "function") {
+      return dateKeyToStartTsInDisplayTz(dateStr);
+    }
+    const ms = Date.parse(`${dateStr}T00:00:00+08:00`);
     return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
   }
 
   function dateKeyToEndTs(dateStr) {
     if (!dateStr) return null;
-    const ms = Date.parse(`${dateStr}T23:59:59.999Z`);
+    if (typeof dateKeyToEndTsInDisplayTz === "function") {
+      return dateKeyToEndTsInDisplayTz(dateStr);
+    }
+    const ms = Date.parse(`${dateStr}T23:59:59.999+08:00`);
     return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
   }
 
@@ -90,24 +97,27 @@
     return n;
   }
 
-  /** UTC 周期起点（秒） */
+  /** 北京时间周期起点（秒） */
   function periodStartTs(ts, mode) {
-    const d = new Date(ts * 1000);
-    const y = d.getUTCFullYear();
-    const m = d.getUTCMonth();
-    const day = d.getUTCDate();
+    const key = tsToDateKey(ts);
+    if (!key) return ts;
+    const [ys, ms, ds] = key.split("-");
+    const y = Number(ys);
+    const m = Number(ms);
+    const day = Number(ds);
     if (mode === "month") {
-      return Math.floor(Date.UTC(y, m, 1) / 1000);
+      return dateKeyToStartTs(`${ys}-${ms}-01`);
     }
     if (mode === "week") {
-      // ISO 周：周一为起点
-      const utcMidnight = Date.UTC(y, m, day);
-      const dow = new Date(utcMidnight).getUTCDay(); // 0=Sun
+      const start = dateKeyToStartTs(key);
+      if (start == null) return ts;
+      // Monday-based week in Beijing
+      const noon = Date.parse(`${key}T12:00:00+08:00`);
+      const dow = new Date(noon).getUTCDay(); // 0=Sun
       const offset = (dow + 6) % 7;
-      return Math.floor((utcMidnight - offset * 86400000) / 1000);
+      return start - offset * 86400;
     }
-    // day
-    return Math.floor(Date.UTC(y, m, day) / 1000);
+    return dateKeyToStartTs(key) ?? ts;
   }
 
   function buildTradeEquityData(curve) {
@@ -138,47 +148,28 @@
   }
 
   function formatEquityTick(time, mode) {
-    const d = new Date(time * 1000);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
+    const key = tsToDateKey(time);
+    if (!key) return "—";
+    const [y, m, day] = key.split("-");
     if (mode === "month") return `${y}-${m}`;
-    if (mode === "week") return `${y}-${m}-${day}`;
-    if (mode === "day") return `${y}-${m}-${day}`;
     return `${y}-${m}-${day}`;
   }
 
   function formatEquityCrosshair(time, mode) {
-    const d = new Date(time * 1000);
-    const locale = typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN";
+    const zone = typeof t === "function" ? t("time.beijing") : "北京时间";
     if (mode === "month") {
-      return d.toLocaleString(locale, {
-        year: "numeric",
-        month: "short",
-        timeZone: "UTC",
-      });
+      if (typeof fmtDisplayTime === "function") {
+        const s = fmtDisplayTime(time, { withZone: false });
+        return s.slice(0, 7);
+      }
+      return formatEquityTick(time, "month");
     }
     if (mode === "week" || mode === "day") {
-      return (
-        d.toLocaleString(locale, {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          timeZone: "UTC",
-        }) + (mode === "week" ? ` (${t("report.periodWeek")})` : " UTC")
-      );
+      const day = tsToDateKey(time) || "—";
+      return mode === "week" ? `${day} (${t("report.periodWeek")})` : `${day} ${zone}`;
     }
-    return (
-      d.toLocaleString(locale, {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-        timeZone: "UTC",
-      }) + " UTC"
-    );
+    if (typeof fmtDisplayTime === "function") return fmtDisplayTime(time);
+    return `${formatEquityTick(time, "day")} ${zone}`;
   }
 
   function syncEquityPeriodButtons() {
