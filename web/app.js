@@ -3693,6 +3693,26 @@ async function init() {
   await initPatternJournal();
   renderStatement();
   await handlePatternRestoreFromUrl();
+  await handleFocusOrderFromUrl();
+}
+
+async function handleFocusOrderFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const focusId = params.get("focusOrder");
+  if (!focusId) return;
+  const clean = new URL(window.location.href);
+  clean.searchParams.delete("focusOrder");
+  window.history.replaceState({}, "", clean.pathname + clean.search);
+  const rec = state.orderRecords.find((r) => String(r.id) === String(focusId));
+  if (!rec) return;
+  normalizeOrderRecord(rec);
+  rec.chartVisible = true;
+  state.selectedOrderId = rec.id;
+  renderStatement();
+  updateRrOverlay();
+  updateChart({ preserveView: true });
+  await ensureOrderVisibleOnChart(rec);
+  savePracticeStateNow();
 }
 
 init().catch((e) => {

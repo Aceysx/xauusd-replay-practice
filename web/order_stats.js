@@ -250,6 +250,102 @@
     };
   }
 
+  function avgExcursion(records) {
+    let mfeSum = 0;
+    let maeSum = 0;
+    let n = 0;
+    for (const r of records || []) {
+      const mfe = num(r.max_float_profit, NaN);
+      const mae = num(r.max_float_loss, NaN);
+      if (!Number.isFinite(mfe) && !Number.isFinite(mae)) continue;
+      n += 1;
+      mfeSum += Number.isFinite(mfe) ? mfe : 0;
+      maeSum += Number.isFinite(mae) ? mae : 0;
+    }
+    if (!n) return { avgMfe: null, avgMae: null };
+    return { avgMfe: mfeSum / n, avgMae: maeSum / n };
+  }
+
+  function payoffRatio(report) {
+    if (!report) return null;
+    const avgWin = num(report.avgWin);
+    const avgLoss = num(report.avgLoss);
+    if (!(avgWin > 0) || !(avgLoss < 0)) return null;
+    return avgWin / Math.abs(avgLoss);
+  }
+
+  function enrichTagBucket(tagId, label, records) {
+    const report = computeMt5Report(records);
+    const { avgMfe, avgMae } = avgExcursion(records);
+    return {
+      tagId,
+      label,
+      n: report?.n ?? 0,
+      records: records || [],
+      report,
+      winRate: report?.winRate ?? null,
+      totalNet: report?.totalNet ?? null,
+      expectedPayoff: report?.expectedPayoff ?? null,
+      payoffRatio: payoffRatio(report),
+      profitFactor: report?.profitFactor ?? null,
+      avgWin: report?.avgWin ?? null,
+      avgLoss: report?.avgLoss ?? null,
+      avgMfe,
+      avgMae,
+    };
+  }
+
+  /**
+   * Per-tag stats. Multi-tag trades count toward each tag.
+   * @param {Array} records
+   * @param {Array<{id:string,label?:string}>} tagCatalog
+   * @returns {{ rows: Array, untagged: object }}
+   */
+  function computeTagStats(records, tagCatalog) {
+    const list = Array.isArray(records) ? records : [];
+    const catalog = Array.isArray(tagCatalog) ? tagCatalog : [];
+    const byTag = new Map();
+    for (const tg of catalog) {
+      if (!tg || tg.id == null) continue;
+      byTag.set(String(tg.id), []);
+    }
+    const untagged = [];
+    for (const r of list) {
+      const tags = Array.isArray(r?.tags)
+        ? r.tags.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : [];
+      if (!tags.length) {
+        untagged.push(r);
+        continue;
+      }
+      const seen = new Set();
+      for (const id of tags) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (!byTag.has(id)) byTag.set(id, []);
+        byTag.get(id).push(r);
+      }
+    }
+    const labelOf = (id) => {
+      const found = catalog.find((x) => String(x.id) === String(id));
+      return found?.label || String(id);
+    };
+    const rows = [];
+    for (const tg of catalog) {
+      const id = String(tg.id);
+      rows.push(enrichTagBucket(id, tg.label || id, byTag.get(id) || []));
+      byTag.delete(id);
+    }
+    // orphan tag ids still present on orders
+    for (const [id, recs] of byTag) {
+      rows.push(enrichTagBucket(id, labelOf(id), recs));
+    }
+    return {
+      rows,
+      untagged: enrichTagBucket("__untagged__", "", untagged),
+    };
+  }
+
   function formatMt5Number(v, digits = 2) {
     if (v == null || !Number.isFinite(v)) return "—";
     if (v === Infinity) return "∞";
@@ -257,5 +353,6 @@
   }
 
   global.computeMt5Report = computeMt5Report;
+  global.computeTagStats = computeTagStats;
   global.formatMt5Number = formatMt5Number;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -2157,3 +2157,116 @@ body.pattern-page {
   gap: 8px;
   font-size: 12px;
 }
+
+/* —— 订单管理页 —— */
+body.orders-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+}
+.orders-page-main {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+}
+.orders-filter {
+  flex-wrap: wrap;
+}
+.orders-save-msg {
+  margin-left: auto;
+  font-size: 12px;
+}
+.orders-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.orders-content.hidden { display: none; }
+.orders-stats-card,
+.orders-list-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px 14px 14px;
+}
+.orders-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.orders-section-hint {
+  margin: 0;
+  font-size: 12px;
+}
+.orders-manage-tags {
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.orders-manage-tags:hover { text-decoration: underline; }
+.orders-stats-wrap,
+.orders-list-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+.orders-stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.orders-stats-table th,
+.orders-stats-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #1e2430;
+  text-align: left;
+  white-space: nowrap;
+}
+.orders-stats-table th {
+  color: var(--muted);
+  font-weight: 500;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+.orders-stats-table tbody tr {
+  cursor: pointer;
+}
+.orders-stats-table tbody tr:hover {
+  background: rgba(91, 156, 245, 0.1);
+}
+.orders-stats-table tbody tr.active {
+  background: rgba(91, 156, 245, 0.22);
+  box-shadow: inset 3px 0 0 #5b9cf5;
+}
+.orders-list-table {
+  width: max-content;
+  min-width: 100%;
+}
+.orders-list-table .stmt-tags-cell {
+  min-width: 120px;
+}
+.orders-chart-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 12px;
+}
+.orders-chart-link:hover { text-decoration: underline; }
+.orders-list-empty {
+  padding: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+@media (max-width: 640px) {
+  .orders-page-main { padding: 10px; }
+}
+
