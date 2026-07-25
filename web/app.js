@@ -2982,6 +2982,36 @@ function renderEquityCurve(report) {
   const curve = report?.equityCurve || [];
   if (!curve.length) return;
 
+  /** 真实平仓 unix；重复时间戳顺延 1 秒，保证 LWC 严格递增 */
+  let lastT = 0;
+  const data = [];
+  for (const p of curve) {
+    let t = Number(p.time);
+    if (!Number.isFinite(t) || t < 1_000_000_000) {
+      // 无有效时间时按日步进，避免挤在同一秒
+      t = (lastT > 0 ? lastT : 1_700_000_000) + 86400;
+    }
+    if (t <= lastT) t = lastT + 1;
+    lastT = t;
+    data.push({ time: t, value: p.equity });
+  }
+
+  const fmtEquityTime = (time) => {
+    const d = new Date(time * 1000);
+    const locale = typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN";
+    return (
+      d.toLocaleString(locale, {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: "UTC",
+      }) + " UTC"
+    );
+  };
+
   equityChartApi = LightweightCharts.createChart(el, {
     width: el.clientWidth || 640,
     height: el.clientHeight || 260,
@@ -2994,7 +3024,21 @@ function renderEquityCurve(report) {
       horzLines: { color: "rgba(255,255,255,0.06)" },
     },
     rightPriceScale: { borderVisible: false },
-    timeScale: { borderVisible: false, fixLeftEdge: true, fixRightEdge: true },
+    timeScale: {
+      borderVisible: false,
+      fixLeftEdge: true,
+      fixRightEdge: true,
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: (time) => {
+        const d = new Date(time * 1000);
+        return d.toISOString().slice(0, 10);
+      },
+    },
+    localization: {
+      locale: typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN",
+      timeFormatter: fmtEquityTime,
+    },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   });
   equitySeriesApi = equityChartApi.addAreaSeries({
@@ -3006,12 +3050,6 @@ function renderEquityCurve(report) {
     lastValueVisible: true,
   });
 
-  // 用成交序号作横轴，避免重复时间戳；映射为 unix 秒序列
-  const base = 1_700_000_000;
-  const data = curve.map((p) => ({
-    time: base + p.index,
-    value: p.equity,
-  }));
   equitySeriesApi.setData(data);
   equityChartApi.timeScale().fitContent();
 
