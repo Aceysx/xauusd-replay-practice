@@ -6,6 +6,11 @@ paths:
   m5_dir: Files
   m5_glob: "xauusd_xauusdm_m5_{date}.csv"
   m1_glob: "xauusd_xauusdm_m1_{date}.csv"
+  m15_glob: "xauusd_xauusdm_m15_{date}.csv"
+  m30_glob: "xauusd_xauusdm_m30_{date}.csv"
+  h1_glob: "xauusd_xauusdm_h1_{date}.csv"
+  h4_glob: "xauusd_xauusdm_h4_{date}.csv"
+  d1_glob: "xauusd_xauusdm_d1_{date}.csv"
 
 timezone:
   broker_utc_offset_hours: 3

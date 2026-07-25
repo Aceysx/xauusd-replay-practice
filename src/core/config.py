@@ -14,6 +14,15 @@ def app_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def writable_data_dir() -> Path:
+    """可写数据目录；打包后使用用户 Application Support。"""
+    if getattr(sys, "frozen", False):
+        d = Path.home() / "Library" / "Application Support" / "ReplayPractice"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return app_root()
+
+
 ROOT = app_root()
 CONFIG_PATH = ROOT / "config.yaml"
 
@@ -37,6 +46,11 @@ def get_paths() -> dict:
         "m5_dir": (root / paths.get("m5_dir", "Files")).resolve(),
         "m5_glob": paths.get("m5_glob", "xauusd_xauusdm_m5_{date}.csv"),
         "m1_glob": paths.get("m1_glob", "xauusd_xauusdm_m1_{date}.csv"),
+        "m15_glob": paths.get("m15_glob", "xauusd_xauusdm_m15_{date}.csv"),
+        "m30_glob": paths.get("m30_glob", "xauusd_xauusdm_m30_{date}.csv"),
+        "h1_glob": paths.get("h1_glob", "xauusd_xauusdm_h1_{date}.csv"),
+        "h4_glob": paths.get("h4_glob", "xauusd_xauusdm_h4_{date}.csv"),
+        "d1_glob": paths.get("d1_glob", "xauusd_xauusdm_d1_{date}.csv"),
     }
 
 

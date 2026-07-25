@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-i18n-title="pattern.pageTitle">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>形态管理</title>
+  <link rel="stylesheet" href="/styles.css?v=12" />
+</head>
+<body class="pattern-page">
+  <header class="pattern-page-header">
+    <a href="/" class="pat-back-link" data-i18n="pattern.backReplay">回测练习</a>
+    <h1 class="pattern-page-title" id="patternPageTitle" data-i18n="pattern.pageTitle">形态管理</h1>
+    <label class="locale-wrap">
+      <select id="localeSelect" class="locale-select" aria-label="Language"></select>
+    </label>
+  </header>
+  <main id="patternPageMain" class="pattern-page-main">
+    <aside class="pat-sidebar">
+      <section id="patternTypesPanel" class="pat-types-panel" aria-labelledby="patternTypesHeading"></section>
+      <section id="patternTagsPanel" class="pat-tags-panel" aria-labelledby="patternTagsHeading"></section>
+    </aside>
+    <section class="pat-cases-panel">
+      <div id="patternLibrary" class="pattern-library"></div>
+    </section>
+  </main>
+  <dialog id="patternTypeNotes" class="pattern-type-notes-dialog">
+    <div class="pat-type-notes-dialog-inner">
+      <header class="pat-type-notes-dialog-head">
+        <h2 class="pat-type-notes-dialog-title" id="patTypeNotesTitle"></h2>
+        <button type="button" class="pat-detail-close" id="patTypeNotesClose" data-i18n-aria="pattern.close" aria-label="Close">×</button>
+      </header>
+      <textarea
+        id="patTypeNotesInput"
+        class="pat-type-notes-editor"
+        data-i18n-placeholder="pattern.typeNotesPlaceholder"
+        placeholder="记录该形态的定义、识别要点、交易总结…"
+        spellcheck="false"
+      ></textarea>
+      <footer class="pat-type-notes-dialog-foot">
+        <button type="button" class="pat-btn-restore" id="patTypeNotesSave" data-i18n="pattern.save">保存</button>
+      </footer>
+    </div>
+  </dialog>
+  <dialog id="patternDetail" class="pattern-detail pat-detail-fullscreen"></dialog>
+  <dialog id="patternFrameZoom" class="pattern-frame-zoom">
+    <div class="pattern-frame-zoom-inner">
+      <button type="button" class="pattern-frame-zoom-close" aria-label="Close">×</button>
+      <span class="pattern-frame-zoom-label" id="patternFrameZoomLabel"></span>
+      <img id="patternFrameZoomImg" alt="" />
+    </div>
+  </dialog>
+  <script>window.__API_BASE__ = "";</script>
+  <script src="/i18n.js?v=7"></script>
+  <script src="/pattern_shared.js?v=6"></script>
+  <script src="/patterns_page.js?v=13"></script>
+</body>
+</html>

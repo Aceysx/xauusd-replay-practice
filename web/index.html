@@ -5,10 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>回测练习</title>
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <link rel="stylesheet" href="/styles.css?v=14" />
 </head>
 <body>
   <header>
+    <div id="barInfo" class="bar-info" aria-live="polite" data-i18n-aria="barInfo.aria" data-i18n="barInfo.empty"></div>
+    <div id="patternDock" class="pattern-dock hidden" aria-live="polite"></div>
     <label class="locale-wrap">
       <select id="localeSelect" class="locale-select" aria-label="Language"></select>
     </label>
@@ -17,6 +20,45 @@
   <main>
     <section class="chart-area">
       <div id="chart"></div>
+      <div class="draw-toolbar-float">
+        <div class="draw-toolbar" role="toolbar" data-i18n-aria="draw.toolbar">
+          <button type="button" class="active" data-tool="cursor" data-i18n-title="draw.cursor.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path class="i-fill" fill="currentColor" d="M4 3l12 8-5 1-3 6z"/></svg>
+          </button>
+          <button type="button" data-tool="hline" data-i18n-title="draw.hline.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M3 10h14"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M3 10V7"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M17 10v3"/></svg>
+          </button>
+          <button type="button" data-tool="trend" data-i18n-title="draw.trend.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M4 15L16 5"/><circle class="i-fill" fill="currentColor" cx="4" cy="15" r="1.6"/><circle class="i-fill" fill="currentColor" cx="16" cy="5" r="1.6"/></svg>
+          </button>
+          <button type="button" data-tool="ray" data-i18n-title="draw.ray.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M4 15L17 4"/><circle class="i-fill" fill="currentColor" cx="4" cy="15" r="1.6"/><polygon class="i-fill" fill="currentColor" points="17,4 13.2,6.8 15.2,8.8"/></svg>
+          </button>
+          <button type="button" data-tool="path" data-i18n-title="draw.path.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><polyline stroke="currentColor" fill="none" stroke-width="1.6" points="3,14 8,9 12,11 16,5"/><polygon class="i-fill" fill="currentColor" points="16,5 12.8,7.2 14.2,9.8"/></svg>
+          </button>
+          <button type="button" data-tool="fib" data-i18n-title="draw.fib.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 3v14"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 5h9"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 8.5h8"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 12h7"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 15.5h9"/></svg>
+          </button>
+          <button type="button" data-tool="rect" data-i18n-title="draw.rect.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect stroke="currentColor" fill="none" stroke-width="1.6" x="4" y="5" width="12" height="10" rx="1"/></svg>
+          </button>
+          <button type="button" data-tool="zone" data-i18n-title="draw.zone.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <rect class="i-fill" fill="currentColor" opacity="0.28" x="3" y="5" width="14" height="10"/>
+              <path stroke="currentColor" fill="none" stroke-width="1.6" d="M3 5v10M17 5v10"/>
+              <path stroke="currentColor" fill="none" stroke-width="1.2" d="M3 5h14M3 15h14"/>
+            </svg>
+          </button>
+          <button type="button" data-tool="text" data-i18n-title="draw.text.title">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 5h8"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M10 5v11"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M7 16h6"/></svg>
+          </button>
+          <div class="draw-color-palette" id="drawColorPalette" role="group" data-i18n-title="draw.color.title" data-i18n-aria="draw.color.aria"></div>
+          <button type="button" data-tool="clear" data-i18n-title="draw.clear.title" class="draw-clear">
+            <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M4 6h12"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M8 6V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M7 6l1 10h4l1-10"/></svg>
+          </button>
+        </div>
+      </div>
       <svg id="drawOverlay" class="draw-overlay" aria-hidden="true"></svg>
       <div id="rrOverlay" class="rr-overlay hidden" aria-hidden="true"></div>
       <div id="chartLoading" class="chart-loading hidden" aria-hidden="true">
@@ -31,6 +73,14 @@
         data-i18n-placeholder="draw.text.placeholder"
         placeholder="输入文字…"
       />
+      <div id="screenshotPick" class="screenshot-pick hidden" aria-hidden="true">
+        <p class="screenshot-pick-hint" id="screenshotPickHint" data-i18n="screenshot.pickHint">拖拽框选截图区域</p>
+        <div class="screenshot-pick-box" id="screenshotPickBox"></div>
+        <div class="screenshot-pick-bar hidden" id="screenshotPickBar">
+          <button type="button" id="screenshotPickOk" data-i18n="screenshot.confirm">确认</button>
+          <button type="button" id="screenshotPickCancel" data-i18n="screenshot.cancel">取消</button>
+        </div>
+      </div>
     </section>
     <div id="panelResize" class="panel-resize" data-i18n-title="panel.resize" title="上下拖动调整下单区高度"></div>
     <section class="stmt-panel" id="stmtPanel">
@@ -51,38 +101,22 @@
           <button type="button" id="btnJump" class="btn-jump" data-i18n="btn.jump">跳转回测</button>
           <button type="button" id="btnRandomStart" class="btn-jump" data-i18n="btn.randomStart" data-i18n-title="btn.randomStart.title">随机开始</button>
           <span class="tb-sep"></span>
-          <div class="draw-toolbar" role="toolbar" data-i18n-aria="draw.toolbar">
-            <button type="button" class="active" data-tool="cursor" data-i18n-title="draw.cursor.title">
-              <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path class="i-fill" fill="currentColor" d="M4 3l12 8-5 1-3 6z"/></svg>
-            </button>
-            <button type="button" data-tool="hline" data-i18n-title="draw.hline.title">
-              <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M3 10h14"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M3 10V7"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M17 10v3"/></svg>
-            </button>
-            <button type="button" data-tool="trend" data-i18n-title="draw.trend.title">
-              <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M4 15L16 5"/><circle class="i-fill" fill="currentColor" cx="4" cy="15" r="1.6"/><circle class="i-fill" fill="currentColor" cx="16" cy="5" r="1.6"/></svg>
-            </button>
-            <button type="button" data-tool="path" data-i18n-title="draw.path.title">
-              <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><polyline stroke="currentColor" fill="none" stroke-width="1.6" points="3,14 8,9 12,11 16,5"/><polygon class="i-fill" fill="currentColor" points="16,5 12.8,7.2 14.2,9.8"/></svg>
-            </button>
-            <button type="button" data-tool="fib" data-i18n-title="draw.fib.title">
-              <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 3v14"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 5h9"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 8.5h8"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 12h7"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 15.5h9"/></svg>
-            </button>
-            <button type="button" data-tool="rect" data-i18n-title="draw.rect.title">
-              <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><rect stroke="currentColor" fill="none" stroke-width="1.6" x="4" y="5" width="12" height="10" rx="1"/></svg>
-            </button>
-            <button type="button" data-tool="text" data-i18n-title="draw.text.title">
-              <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M6 5h8"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M10 5v11"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M7 16h6"/></svg>
-            </button>
-            <button type="button" data-tool="clear" data-i18n-title="draw.clear.title" class="draw-clear">
-              <svg class="draw-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path stroke="currentColor" fill="none" stroke-width="1.6" d="M4 6h12"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M8 6V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1"/><path stroke="currentColor" fill="none" stroke-width="1.6" d="M7 6l1 10h4l1-10"/></svg>
-            </button>
-          </div>
-          <span class="tb-sep"></span>
           <button type="button" id="btnResetData" class="btn-reset" data-i18n="btn.reset" data-i18n-title="btn.reset.title">重置数据</button>
+          <span class="tb-sep"></span>
+          <a href="/patterns.html" class="btn-link pat-toolbar-link" data-i18n="pattern.manage">形态管理</a>
         </div>
       </div>
+      <div id="panelOrdersBody">
       <div class="panel-head">
-        <span><span data-i18n="orders.title">下单记录</span> <span class="muted" id="stmtCount"></span></span>
+        <span>
+          <span data-i18n="orders.title">下单记录</span>
+          <span class="muted" id="stmtCount"></span>
+          <span class="muted orders-import-msg" id="ordersImportMsg" hidden></span>
+        </span>
+        <div class="panel-head-actions">
+          <button type="button" id="btnImportOrders" class="btn-import-orders" data-i18n="orders.import">导入</button>
+          <input type="file" id="ordersImportFile" hidden accept=".csv,text/csv" tabindex="-1" />
+        </div>
       </div>
       <div class="session-stats" id="sessionStats">
         <div class="stat-grid" id="sessionStatsGrid" data-i18n="orders.empty">暂无平仓记录</div>
@@ -93,21 +127,43 @@
             <tr>
               <th data-i18n="table.id">#</th>
               <th data-i18n="table.open">开仓</th>
+              <th data-i18n="table.closeTime">平仓时间</th>
               <th data-i18n="table.dir">方向</th>
-              <th data-i18n="table.entry">入场</th>
-              <th data-i18n="table.close">平仓</th>
-              <th data-i18n="table.pnl">盈亏</th>
+              <th data-i18n="table.lots">手数</th>
+              <th data-i18n="table.entryPrice">入场</th>
+              <th data-i18n="table.entryReason">进场位</th>
+              <th data-i18n="table.tpReason">止盈位</th>
+              <th data-i18n="table.slReason">止损位</th>
+              <th data-i18n="table.slPts">止损点</th>
+              <th data-i18n="table.tpPts">止盈点</th>
+              <th data-i18n="table.mfe">MFE</th>
+              <th data-i18n="table.mae">MAE</th>
+              <th data-i18n="table.profitable">盈亏</th>
+              <th data-i18n="table.screenshot">截图</th>
+              <th data-i18n="table.closePrice">平仓价</th>
+              <th data-i18n="table.pnl">盈亏额</th>
               <th data-i18n="table.exit">出场</th>
+              <th data-i18n="table.notes">备注</th>
+              <th class="stmt-col-actions" data-i18n="table.actions">操作</th>
             </tr>
           </thead>
           <tbody id="stmtBody"></tbody>
         </table>
       </div>
+      </div>
     </section>
   </main>
+  <dialog id="screenshotPreview" class="screenshot-preview">
+    <div class="screenshot-preview-inner">
+      <button type="button" class="screenshot-preview-close" id="screenshotPreviewClose" aria-label="Close">×</button>
+      <img id="screenshotPreviewImg" alt="" />
+    </div>
+  </dialog>
   <script>window.__API_BASE__ = "";</script>
-  <script src="/i18n.js"></script>
-  <script src="/drawings.js"></script>
-  <script src="/app.js?v=43"></script>
+  <script src="/i18n.js?v=12"></script>
+  <script src="/drawings.js?v=6"></script>
+  <script src="/pattern_shared.js?v=6"></script>
+  <script src="/patterns.js?v=8"></script>
+  <script src="/app.js?v=68"></script>
 </body>
 </html>

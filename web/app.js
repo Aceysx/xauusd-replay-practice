@@ -2,14 +2,15 @@
 
 const LOAD_THRESHOLD = 200;
 const SPEEDS = [1, 2, 4, 8];
+/** 各周期回放统一墙钟节奏（@1x ≈ 300ms/根），与 K 线真实时长无关 */
+const PLAYBACK_BAR_MS = 300;
 const DRAG_HIT_PX = 18;
 const LOTS = 0.01;
 const PRACTICE_STORAGE_KEY = "replay_practice_v1";
+const ORDER_RECORDS_STORAGE_KEY = "replay_order_records_v1";
 
 let practiceSaveTimer = null;
-let refetchSeq = 0;
-let coarseRefetchTimer = null;
-let replayAdvanceBusy = false;
+let orderRecordsSaveTimer = null;
 const barsTfCache = new Map();
 const BARS_CACHE_MAX = 32;
 let replayTfPrefetchTimer = null;
@@ -42,6 +43,7 @@ const state = {
   suppressRangeLoad: false,
   restoringTfView: false,
   selectedOrderId: null,
+  barInfoBar: null,
   /** 各周期独立视野：logicalFrom/To + barSpacing；跨周期首次进入用 timeFrom/To */
   tfViews: {},
 };
@@ -75,11 +77,13 @@ function refreshUiLocale() {
   renderStatement();
   renderSessionStats();
   updateRrOverlay();
+  if (typeof renderPatternDock === "function") renderPatternDock();
   if ($("btnPlay")) $("btnPlay").textContent = state.playing ? t("btn.pause") : t("btn.play");
   if ($("btnSpeed")) $("btnSpeed").textContent = `${state.speed}x`;
   if (!state.loading && $("btnJump")) $("btnJump").textContent = t("btn.jump");
   if (!state.loading && $("btnRandomStart"))
     $("btnRandomStart").textContent = t("btn.randomStart");
+  updateBarInfoPanel(state.barInfoBar ?? currentBar());
   if (state.chartReady && candleSeries) updateChart({ preserveView: true });
 }
 
@@ -87,7 +91,48 @@ window.onLocaleChange = refreshUiLocale;
 
 function fmtTime(ts) {
   if (!ts) return "—";
-  return new Date(ts * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  const locale = typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN";
+  const d = new Date(ts * 1000);
+  const part = d.toLocaleString(locale, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  });
+  return `${part} ${typeof t === "function" ? t("time.utc") : "UTC"}`;
+}
+
+function barFromClickParam(param) {
+  if (!param?.time) return null;
+  const seriesData = param.seriesData?.get?.(candleSeries);
+  if (seriesData) {
+    return {
+      time: param.time,
+      open: seriesData.open,
+      high: seriesData.high,
+      low: seriesData.low,
+      close: seriesData.close,
+    };
+  }
+  return state.allBars[findBarIndexByTime(param.time)] || null;
+}
+
+function updateBarInfoPanel(bar) {
+  const el = $("barInfo");
+  if (!el) return;
+  state.barInfoBar = bar || null;
+  if (!bar) {
+    el.textContent = t("barInfo.empty");
+    el.className = "bar-info";
+    return;
+  }
+  const up = bar.close >= bar.open;
+  el.className = `bar-info bar-${up ? "up" : "down"}`;
+  const time = fmtTime(bar.time);
+  el.innerHTML = `<span class="bar-time">${time}</span>${t("barInfo.o")} ${bar.open.toFixed(2)}  ${t("barInfo.h")} ${bar.high.toFixed(2)}  ${t("barInfo.l")} ${bar.low.toFixed(2)}  ${t("barInfo.c")} ${bar.close.toFixed(2)}`;
 }
 
 function profitUsd(dir, entry, exitPx, lots = LOTS) {
@@ -136,8 +181,7 @@ function visibleBarsForChart() {
 }
 
 function syncPlaybackBarMs() {
-  const tfMeta = state.config?.timeframes?.find((x) => x.id === state.timeframe);
-  state.barMs = tfMeta?.bar_ms_at_1x ?? state.config?.bar_ms_per_candle_at_1x ?? 300;
+  state.barMs = PLAYBACK_BAR_MS;
 }
 
 function timeframeBarSeconds(tf = state.timeframe) {
@@ -261,52 +305,35 @@ function replayProgressBarIndex() {
   return findBarIndexByTime(state.replayUntilTime);
 }
 
-function isCoarseReplayTimeframe(tf = state.timeframe) {
-  return state.replayMode && !isFineReplayTimeframe(tf);
+/** 播放中轻量推进一步（不做全量重绘 / 存盘 / 标记刷新） */
+function advanceReplayStepLite() {
+  const next = state.cursor + 1;
+  if (next >= state.allBars.length) return false;
+  state.cursor = next;
+  const bar = state.allBars[next];
+  if (state.replayMode && bar) recordReplayProgress(bar.time);
+  $("playTime").textContent = bar ? fmtTime(bar.time) : "—";
+
+  const bars = visibleBarsForChart();
+  if (bars.length && candleSeries) {
+    candleSeries.update(bars[bars.length - 1]);
+    state._chartSeriesLen = bars.length;
+  }
+  if (state.position && bar) checkPositionOnBar(bar);
+  requestAnimationFrame(() => {
+    if (typeof renderDrawings === "function") renderDrawings();
+    updateRrOverlay();
+  });
+  return true;
 }
 
-/** 大周期回放前进一步：对齐到下一根 K 线开盘时刻（如 1h 整点）并刷新 OHLC */
-async function advanceReplayForward(opts = {}) {
-  if (replayAdvanceBusy) return false;
+/** 回放前进一步 */
+function advanceReplayForward(opts = {}) {
   if (!state.allBars.length || state.cursor >= state.allBars.length - 1) return false;
-
-  const nextIdx = state.cursor + 1;
-  const nextBar = state.allBars[nextIdx];
-  if (!nextBar) return false;
-
-  if (isCoarseReplayTimeframe()) {
-    clearTimeout(coarseRefetchTimer);
-    coarseRefetchTimer = null;
-    recordReplayProgress(nextBar.time);
-    state.cursor = nextIdx;
-    $("playTime").textContent = fmtTime(nextBar.time);
-    updateChart({
-      preserveView: opts.preserveView !== false,
-      ensureVisible: !!opts.ensureVisible,
-      forceSetData: true,
-    });
-    checkPositionOnBar(nextBar);
-    scheduleSavePracticeState();
-
-    // 播放时不阻塞 tick 等网络；步进时仍等待以保证 OHLC 准确
-    if (state.playing) {
-      void refetchLoadedRange(nextBar.time).then(() => {
-        if (state.cursor < nextIdx) return;
-        updateChart({ preserveView: true, forceSetData: true });
-      });
-    } else {
-      replayAdvanceBusy = true;
-      try {
-        await refetchLoadedRange(nextBar.time);
-        updateChart({ preserveView: true, forceSetData: true });
-      } finally {
-        replayAdvanceBusy = false;
-      }
-    }
-    return true;
+  if (state.playing) {
+    return advanceReplayStepLite();
   }
-
-  setCursor(nextIdx, {
+  setCursor(state.cursor + 1, {
     preserveView: opts.preserveView !== false,
     ensureVisible: !!opts.ensureVisible,
   });
@@ -355,9 +382,6 @@ async function switchTimeframe(tf) {
   clearTimeout(replayTfPrefetchTimer);
   replayTfPrefetchTimer = null;
   captureTimeframeView(state.timeframe);
-  refetchSeq += 1;
-  clearTimeout(coarseRefetchTimer);
-  coarseRefetchTimer = null;
   const prevTf = state.timeframe;
   const viewTime = state.allBars[state.cursor]?.time ?? null;
   state.timeframe = tf;
@@ -389,7 +413,6 @@ async function switchTimeframe(tf) {
     }
     applyBarsPayload(data, { replace: true });
     state._chartSeriesLen = 0;
-    const viewToRestore = resolveTimeframeView(tf, prevTf);
     let idx = 0;
     if (state.replayMode) {
       idx = replayProgressBarIndex();
@@ -406,9 +429,14 @@ async function switchTimeframe(tf) {
       fixStaleRange: false,
       forceSetData: true,
       skipReplayProgress: true,
-      restoreTimeView: viewToRestore,
     });
-    scheduleChartViewSync();
+    requestAnimationFrame(() => {
+      scrollChartToCursor();
+      requestAnimationFrame(() => {
+        scrollChartToCursor();
+        syncChartOverlays();
+      });
+    });
     savePracticeStateNow();
     // 切换完成后再低优先级预取其它周期
     setTimeout(() => {
@@ -546,7 +574,7 @@ function scheduleApplyTimeframeView(view) {
       state.suppressRangeLoad = false;
       state.restoringTfView = false;
       updateRrOverlay();
-      if (typeof renderDrawings === "function" && !state.playing) renderDrawings();
+      if (typeof renderDrawings === "function") renderDrawings();
     });
   });
 }
@@ -652,10 +680,14 @@ function restoreVisibleLogicalRange(saved) {
   setVisibleLogicalRange(saved.from, saved.to);
 }
 
+function syncChartOverlays() {
+  if (typeof renderDrawings === "function") renderDrawings();
+  updateRrOverlay();
+}
+
 function scheduleChartViewSync() {
   requestAnimationFrame(() => {
-    if (typeof renderDrawings === "function") renderDrawings();
-    updateRrOverlay();
+    syncChartOverlays();
   });
 }
 
@@ -687,6 +719,8 @@ function buildChartMarkers() {
   const cursorBar = currentBar();
 
   for (const rec of state.orderRecords) {
+    normalizeOrderRecord(rec);
+    if (!rec.chartVisible) continue;
     if (!markerVisibleTime(rec.open_ts)) continue;
     const isBuy = rec.direction === "buy";
     markers.push({
@@ -740,6 +774,7 @@ function buildChartMarkers() {
 
 function updateChart(opts = {}) {
   if (!state.chartReady || !candleSeries) return;
+  const lite = !!opts.lite;
   const bars = visibleBarsForChart();
   const savedRange =
     opts.preserveView && chart ? chart.timeScale().getVisibleLogicalRange() : null;
@@ -784,8 +819,10 @@ function updateChart(opts = {}) {
     });
   }
   if (opts.ensureVisible) ensureCursorInView();
-  updateRrOverlay();
-  if (typeof renderDrawings === "function" && !state.playing) renderDrawings();
+  if (!lite) {
+    updateRrOverlay();
+    if (typeof renderDrawings === "function") renderDrawings();
+  }
 }
 
 function setCursor(idx, opts = {}) {
@@ -801,6 +838,11 @@ function setCursor(idx, opts = {}) {
     }
   }
   $("playTime").textContent = bar ? fmtTime(bar.time) : "—";
+  updateBarInfoPanel(bar);
+  if (state.position) {
+    updatePositionExcursion();
+    updatePositionInfoPanel();
+  }
   const scrollToCursor = !!opts.scrollToCursor;
   updateChart({
     scrollToCursor,
@@ -812,19 +854,13 @@ function setCursor(idx, opts = {}) {
   });
   if (!opts.skipBarCheck) checkPositionOnBar(bar);
   if (!opts.skipLoad && state.cursor <= LOAD_THRESHOLD) loadMoreBefore();
-  if (!opts.skipSave) scheduleSavePracticeState();
+  if (!opts.skipSave && !state.playing) scheduleSavePracticeState();
 }
 
 async function goToLatest() {
   pause();
-  const needsRefetch =
-    state.replayUntilTime != null &&
-    isCoarseReplayTimeframe() &&
-    state.loadedStart &&
-    state.loadedEnd;
   state.replayMode = false;
   state.replayUntilTime = null;
-  if (needsRefetch) await refetchLoadedRange();
   setCursor(state.allBars.length - 1, {
     skipLoad: true,
     scrollToCursor: true,
@@ -892,6 +928,79 @@ function zoneAlpha(entry, level, refDist, readonly = false) {
   return base + span * Math.min(1, dist / ref);
 }
 
+function floatBandAlpha(entry, mark, refDist) {
+  const dist = Math.abs(mark - entry);
+  const ref = Math.max(refDist, 0.5);
+  return 0.14 + 0.22 * Math.min(1, dist / ref);
+}
+
+function barsSinceOpen(pos) {
+  if (!pos?.openTime) return [];
+  const openIdx = findBarIndexByTime(pos.openTime);
+  const endIdx = state.cursor;
+  if (openIdx < 0 || openIdx > endIdx) return [];
+  return state.allBars.slice(openIdx, endIdx + 1);
+}
+
+function computeExcursionFromBars(pos, bars) {
+  let mfe = 0;
+  let mae = 0;
+  for (const bar of bars) {
+    let favorable;
+    let adverse;
+    if (pos.direction === "buy") {
+      favorable = profitUsd("buy", pos.entry, bar.high, pos.lots);
+      adverse = profitUsd("buy", pos.entry, bar.low, pos.lots);
+    } else {
+      favorable = profitUsd("sell", pos.entry, bar.low, pos.lots);
+      adverse = profitUsd("sell", pos.entry, bar.high, pos.lots);
+    }
+    if (favorable > mfe) mfe = favorable;
+    if (adverse < mae) mae = adverse;
+  }
+  return { mfe, mae };
+}
+
+function updatePositionExcursion() {
+  const pos = state.position;
+  if (!pos) return;
+  const bars = barsSinceOpen(pos);
+  if (!bars.length) {
+    pos.maxFloatProfit = pos.maxFloatProfit ?? 0;
+    pos.maxFloatLoss = pos.maxFloatLoss ?? 0;
+    return;
+  }
+  const { mfe, mae } = computeExcursionFromBars(pos, bars);
+  pos.maxFloatProfit = Math.max(pos.maxFloatProfit ?? 0, mfe);
+  pos.maxFloatLoss = Math.min(pos.maxFloatLoss ?? 0, mae);
+}
+
+function formatExcursionLine(mfe, mae) {
+  const ps = mfe > 0.005 ? `+${mfe.toFixed(2)}` : "0.00";
+  const ls = mae < -0.005 ? mae.toFixed(2) : "0.00";
+  return `${t("rr.maxFloatProfit")} ${ps} · ${t("rr.maxFloatLoss")} ${ls}`;
+}
+
+function priceForPnlUsd(trade, pnlUsd) {
+  const mult = (trade.lots ?? LOTS) / 0.01;
+  if (trade.direction === "buy") return trade.entry + pnlUsd / mult;
+  return trade.entry - pnlUsd / mult;
+}
+
+function applyFloatBand(el, entry, mark, refDist, kind, alphaScale = 1) {
+  if (!el || mark == null) return;
+  const a = floatBandAlpha(entry, mark, refDist) * alphaScale;
+  el.classList.remove("rr-float-profit", "rr-float-loss");
+  el.classList.add(kind === "profit" ? "rr-float-profit" : "rr-float-loss");
+  if (kind === "profit") {
+    el.style.background = `rgba(61, 214, 140, ${a})`;
+    el.style.borderColor = `rgba(61, 214, 140, ${Math.min(0.45, a + 0.1)})`;
+  } else {
+    el.style.background = `rgba(240, 113, 120, ${a})`;
+    el.style.borderColor = `rgba(240, 113, 120, ${Math.min(0.45, a + 0.1)})`;
+  }
+}
+
 function applyZoneDepth(el, entry, level, refDist, kind, readonly = false) {
   if (!el || level == null) return;
   const a = zoneAlpha(entry, level, refDist, readonly);
@@ -951,6 +1060,31 @@ function placeRrLabel(el, box, y, html) {
   el.innerHTML = html;
 }
 
+function placeRrHitArea(hitEl, box, entryY, sl, tp) {
+  if (!hitEl || entryY == null) {
+    if (hitEl) placeRrEl(hitEl, box, 0, 0, false);
+    return;
+  }
+  const pad = 14;
+  let hitTop = entryY - pad;
+  let hitBottom = entryY + pad;
+  if (tp != null) {
+    const y = priceToY(tp);
+    if (y != null) {
+      hitTop = Math.min(hitTop, y);
+      hitBottom = Math.max(hitBottom, y);
+    }
+  }
+  if (sl != null) {
+    const y = priceToY(sl);
+    if (y != null) {
+      hitTop = Math.min(hitTop, y);
+      hitBottom = Math.max(hitBottom, y);
+    }
+  }
+  placeRrEl(hitEl, box, hitTop, Math.max(28, hitBottom - hitTop), true);
+}
+
 function effectiveSlTp(trade) {
   let sl = trade.sl;
   let tp = trade.tp;
@@ -985,11 +1119,15 @@ function positionToTrade(pos) {
     direction: pos.direction,
     lots: pos.lots,
     exit: null,
+    max_float_profit: pos.maxFloatProfit ?? 0,
+    max_float_loss: pos.maxFloatLoss ?? 0,
   };
 }
 
 function collectRrTrades() {
-  const closed = [...state.orderRecords].reverse();
+  const closed = [...state.orderRecords]
+    .reverse()
+    .filter((r) => normalizeOrderRecord(r).chartVisible);
   const list = closed.map((r) => ({
     key: `rec-${r.id}`,
     active: false,
@@ -1004,6 +1142,8 @@ function collectRrTrades() {
     lots: r.lots ?? LOTS,
     exit: r.exit,
     net: r.net,
+    max_float_profit: r.max_float_profit ?? 0,
+    max_float_loss: r.max_float_loss ?? 0,
   }));
   if (state.position) list.push(positionToTrade(state.position));
   return list;
@@ -1017,6 +1157,7 @@ function createRrTradeEl(key) {
     <div class="rr-hit"></div>
     <div class="rr-zone rr-profit"></div>
     <div class="rr-zone rr-loss"></div>
+    <div class="rr-zone rr-float-band"></div>
     <div class="rr-entry-line"></div>
     <div class="rr-handle rr-handle-tp" data-drag="tp"></div>
     <div class="rr-handle rr-handle-entry" data-drag="entry"></div>
@@ -1038,6 +1179,10 @@ function renderSingleRrTrade(wrap, trade) {
   wrap.style.display = "";
   wrap.classList.toggle("rr-readonly", !trade.active);
   wrap.classList.toggle("rr-selected", state.selectedOrderId === trade.id);
+  wrap.classList.toggle(
+    "rr-labels-pinned",
+    trade.active && !!state.drag
+  );
   const readonly = !trade.active;
 
   const { sl, tp } = effectiveSlTp(trade);
@@ -1050,6 +1195,7 @@ function renderSingleRrTrade(wrap, trade) {
   const hitEl = wrap.querySelector(".rr-hit");
   const profitEl = wrap.querySelector(".rr-profit");
   const lossEl = wrap.querySelector(".rr-loss");
+  const floatBandEl = wrap.querySelector(".rr-float-band");
   const entryLine = wrap.querySelector(".rr-entry-line");
   const hTp = wrap.querySelector(".rr-handle-tp");
   const hSl = wrap.querySelector(".rr-handle-sl");
@@ -1060,28 +1206,7 @@ function renderSingleRrTrade(wrap, trade) {
 
   placeRrLine(entryLine, box, entryY);
 
-  if (readonly) {
-    const pad = 14;
-    let hitTop = entryY - pad;
-    let hitBottom = entryY + pad;
-    if (tp != null) {
-      const y = priceToY(tp);
-      if (y != null) {
-        hitTop = Math.min(hitTop, y);
-        hitBottom = Math.max(hitBottom, y);
-      }
-    }
-    if (sl != null) {
-      const y = priceToY(sl);
-      if (y != null) {
-        hitTop = Math.min(hitTop, y);
-        hitBottom = Math.max(hitBottom, y);
-      }
-    }
-    placeRrEl(hitEl, box, hitTop, Math.max(28, hitBottom - hitTop), true);
-  } else {
-    placeRrEl(hitEl, box, 0, 0, false);
-  }
+  placeRrHitArea(hitEl, box, entryY, sl, tp);
 
   const isBuy = trade.direction === "buy";
   const needBranch = trade.active && (trade.sl == null || trade.tp == null);
@@ -1129,21 +1254,42 @@ function renderSingleRrTrade(wrap, trade) {
   const rr = riskRewardLabel(slPts, tpPts);
   const dirLabel = isBuy ? t("rr.long") : t("rr.short");
 
+  const mfe = trade.max_float_profit ?? 0;
+  const mae = trade.max_float_loss ?? 0;
+  const excursionLine = formatExcursionLine(mfe, mae);
+
   if (trade.active) {
     const bar = currentBar();
     const markPx = bar ? bar.close : trade.entry;
+    const markY = priceToY(markPx);
     const floatPnl = profitUsd(trade.direction, trade.entry, markPx, trade.lots);
     const fsign = floatPnl >= 0 ? "+" : "";
+
+    if (floatBandEl && markY != null) {
+      if (floatPnl > 0.005) {
+        const rect = zoneRect(entryY, markY);
+        placeRrEl(floatBandEl, box, rect.top, rect.height, true);
+        applyFloatBand(floatBandEl, trade.entry, markPx, refDist, "profit");
+      } else if (floatPnl < -0.005) {
+        const rect = zoneRect(entryY, markY);
+        placeRrEl(floatBandEl, box, rect.top, rect.height, true);
+        applyFloatBand(floatBandEl, trade.entry, markPx, refDist, "loss");
+      } else {
+        placeRrEl(floatBandEl, box, 0, 0, false);
+      }
+    }
+
     let entryHint = `${dirLabel} ${trade.entry.toFixed(2)} · ${t("rr.float")} ${fsign}${floatPnl.toFixed(2)}`;
     if (needBranch && state.drag !== "branch") entryHint += ` · ${t("rr.dragHint")}`;
     placeRrLabel(
       lEntry,
       box,
       entryY,
-      `${entryHint}<br><span class="rr-sub">${t("rr.riskReward")} ${rr}</span>`
+      `${entryHint}<br><span class="rr-sub">${excursionLine}<br>${t("rr.riskReward")} ${rr}</span>`
     );
     placeRrHandle(hEntry, box, entryY, needBranch);
   } else {
+    placeRrEl(floatBandEl, box, 0, 0, false);
     const net = trade.net ?? profitUsd(trade.direction, trade.entry, trade.close, trade.lots);
     const nsign = net >= 0 ? "+" : "";
     const exitLabel =
@@ -1156,7 +1302,7 @@ function renderSingleRrTrade(wrap, trade) {
       lEntry,
       box,
       entryY,
-      `#${trade.id} ${dirLabel} ${trade.entry.toFixed(2)} · ${exitLabel} ${nsign}${net.toFixed(2)}<br><span class="rr-sub">${t("rr.riskReward")} ${rr}</span>`
+      `#${trade.id} ${dirLabel} ${trade.entry.toFixed(2)} · ${exitLabel} ${nsign}${net.toFixed(2)}<br><span class="rr-sub">${excursionLine}<br>${t("rr.riskReward")} ${rr}</span>`
     );
     placeRrHandle(hEntry, box, entryY, false);
     placeRrHandle(hTp, box, tp != null ? priceToY(tp) : null, false);
@@ -1239,11 +1385,15 @@ function updatePositionInfoPanel() {
   const fcls = floatPnl >= 0 ? "pnl-pos" : "pnl-neg";
   const fsign = floatPnl >= 0 ? "+" : "";
 
+  const mfe = pos.maxFloatProfit ?? 0;
+  const mae = pos.maxFloatLoss ?? 0;
   el.className = `position-info ${pos.direction}`;
   el.innerHTML = `
     <span class="${fcls}">${t("position.float")} ${fsign}${floatPnl.toFixed(2)}</span>
     <span class="pos-sep">·</span>
     <span>${t("position.rr")} ${rr}</span>
+    <span class="pos-sep">·</span>
+    <span class="position-excursion">${formatExcursionLine(mfe, mae)}</span>
   `;
 }
 
@@ -1484,7 +1634,7 @@ function initChart() {
   chartEl = $("chart");
   chart = LightweightCharts.createChart(chartEl, {
     layout: { background: { color: "#0f1115" }, textColor: "#8b95a8" },
-    grid: { vertLines: { color: "#1e2430" }, horzLines: { color: "#1e2430" } },
+    grid: { vertLines: { visible: false }, horzLines: { visible: false } },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     timeScale: { timeVisible: true, secondsVisible: false, fixLeftEdge: false },
     rightPriceScale: { borderColor: "#2a3140" },
@@ -1500,8 +1650,7 @@ function initChart() {
 
   new ResizeObserver(() => {
     chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
-    updateRrOverlay();
-    if (typeof renderDrawings === "function") renderDrawings();
+    syncChartOverlays();
   }).observe(chartEl);
 
   initDrawings(chart, candleSeries, chartEl, {
@@ -1513,8 +1662,12 @@ function initChart() {
     if (!param.time || state.drag) return;
     if (typeof isDrawToolActive === "function" && isDrawToolActive()) return;
     if (typeof isDrawEditing === "function" && isDrawEditing()) return;
+
+    const clickedBar = barFromClickParam(param);
+    if (clickedBar) updateBarInfoPanel(clickedBar);
+
     if (state.position) return;
-    // 回放模式：只用播放/步进推进，点击图表不改变光标（否则会隐藏已揭示的 K 线）
+    // 回放模式：点击只查看 K 线信息，不移动光标
     if (state.replayMode) return;
     pause();
     const idx = findBarIndexByTime(param.time);
@@ -1524,8 +1677,7 @@ function initChart() {
   let rangeTimer = null;
   let tfViewSaveTimer = null;
   chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-    updateRrOverlay();
-    if (typeof renderDrawings === "function" && !state.playing) renderDrawings();
+    syncChartOverlays();
     if (!range || state.suppressRangeLoad || state.loading || !state.hasMoreBefore) return;
     if (range.from > 80) return;
     clearTimeout(rangeTimer);
@@ -1578,37 +1730,100 @@ function applyBarsPayload(data, { replace = false } = {}) {
   return state.allBars.length - (replace ? 0 : prevLen);
 }
 
-async function refetchLoadedRange(anchorTime = null) {
-  if (!state.loadedStart || !state.loadedEnd) return;
-  const seq = ++refetchSeq;
-  const anchor = anchorTime ?? state.allBars[state.cursor]?.time ?? null;
-  const cacheKey = barsCacheKey(
-    state.timeframe,
-    state.loadedStart,
-    state.loadedEnd
-  );
-  barsTfCache.delete(cacheKey);
-  const data = await fetchBarsQuery({
-    start: state.loadedStart,
-    end: state.loadedEnd,
-  });
-  if (seq !== refetchSeq) return;
-  applyBarsPayload(data, { replace: true });
-  if (anchor != null) {
-    const idx = findBarIndexByTime(anchor);
-    const max = Math.max(0, state.allBars.length - 1);
-    state.cursor = Math.max(0, Math.min(idx, max));
+function saveOrderRecordsLocal() {
+  /* 下单记录已改存服务端磁盘；保留空实现以免旧调用报错 */
+}
+
+function loadOrderRecordsLocal() {
+  try {
+    const raw = localStorage.getItem(ORDER_RECORDS_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    return data?.version === 1 ? data : null;
+  } catch {
+    return null;
   }
-  state._chartSeriesLen = 0;
-  updateChart({ preserveView: true, forceSetData: true });
+}
+
+async function fetchOrderRecordsFromDisk() {
+  const res = await fetch(apiUrl("/api/orders"));
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text.slice(0, 160) || res.statusText || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function persistOrderRecordsToDisk(opts = {}) {
+  const payload = {
+    version: 1,
+    orderRecords: state.orderRecords,
+    nextOrderId: state.nextOrderId,
+  };
+  const res = await fetch(apiUrl("/api/orders"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    keepalive: !!opts.keepalive,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || res.statusText || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function scheduleSaveOrderRecords() {
+  clearTimeout(orderRecordsSaveTimer);
+  orderRecordsSaveTimer = setTimeout(() => {
+    void persistOrderRecordsToDisk().catch((e) => {
+      console.warn("保存下单记录到磁盘失败", e);
+    });
+  }, 400);
+}
+
+function applyOrderRecordsStore(data) {
+  if (!data) return;
+  state.orderRecords = Array.isArray(data.orderRecords)
+    ? data.orderRecords.map((r) => normalizeOrderRecord({ ...r }))
+    : [];
+  state.nextOrderId =
+    typeof data.nextOrderId === "number" && data.nextOrderId > 0
+      ? data.nextOrderId
+      : state.orderRecords.length + 1;
+  syncNextOrderIdFromRecords();
+}
+
+/** 磁盘为空时，把 localStorage 里的旧下单记录迁到硬盘 */
+async function migrateOrderRecordsToDiskIfNeeded(diskStore) {
+  const diskHas = Array.isArray(diskStore?.orderRecords) && diskStore.orderRecords.length > 0;
+  if (diskHas) {
+    applyOrderRecordsStore(diskStore);
+    return { migrated: false };
+  }
+  const local = loadOrderRecordsLocal();
+  const snap = loadPracticeSnapshot();
+  const fromLocal = local?.orderRecords?.length
+    ? local
+    : snap?.orderRecords?.length
+      ? { orderRecords: snap.orderRecords, nextOrderId: snap.nextOrderId }
+      : null;
+  if (!fromLocal) {
+    applyOrderRecordsStore(diskStore || { orderRecords: [], nextOrderId: 1 });
+    return { migrated: false };
+  }
+  applyOrderRecordsStore(fromLocal);
+  await persistOrderRecordsToDisk();
+  try {
+    localStorage.removeItem(ORDER_RECORDS_STORAGE_KEY);
+  } catch (_) {}
+  return { migrated: true };
 }
 
 function buildPracticeSnapshot() {
   return {
     version: 1,
     savedAt: Date.now(),
-    orderRecords: state.orderRecords,
-    nextOrderId: state.nextOrderId,
     position: state.position
       ? {
           orderId: state.position.orderId,
@@ -1618,6 +1833,8 @@ function buildPracticeSnapshot() {
           tp: state.position.tp,
           lots: state.position.lots,
           openTime: state.position.openTime,
+          maxFloatProfit: state.position.maxFloatProfit ?? 0,
+          maxFloatLoss: state.position.maxFloatLoss ?? 0,
         }
       : null,
     cursorTime:
@@ -1630,6 +1847,7 @@ function buildPracticeSnapshot() {
     jumpDate: $("jumpDate")?.value || null,
     loadedStart: state.loadedStart,
     loadedEnd: state.loadedEnd,
+    configLastDate: state.config?.last_date || null,
     tfViews: state.tfViews,
     drawings: typeof exportDrawingsState === "function" ? exportDrawingsState() : null,
   };
@@ -1641,6 +1859,7 @@ function savePracticeState() {
   } catch (e) {
     console.warn("保存练习数据失败", e);
   }
+  scheduleSaveOrderRecords();
 }
 
 function scheduleSavePracticeState() {
@@ -1650,7 +1869,15 @@ function scheduleSavePracticeState() {
 
 function savePracticeStateNow() {
   clearTimeout(practiceSaveTimer);
-  savePracticeState();
+  clearTimeout(orderRecordsSaveTimer);
+  try {
+    localStorage.setItem(PRACTICE_STORAGE_KEY, JSON.stringify(buildPracticeSnapshot()));
+  } catch (e) {
+    console.warn("保存练习数据失败", e);
+  }
+  void persistOrderRecordsToDisk({ keepalive: true }).catch((e) => {
+    console.warn("保存下单记录到磁盘失败", e);
+  });
 }
 
 function loadPracticeSnapshot() {
@@ -1674,12 +1901,12 @@ function applyPracticeState(data) {
   if (data.tfViews && typeof data.tfViews === "object") {
     state.tfViews = data.tfViews;
   }
-  state.orderRecords = Array.isArray(data.orderRecords) ? data.orderRecords : [];
-  state.nextOrderId =
-    typeof data.nextOrderId === "number"
-      ? data.nextOrderId
-      : state.orderRecords.length + 1;
+  // 下单记录以磁盘为准，不从练习快照覆盖
   state.position = data.position || null;
+  if (state.position) {
+    state.position.maxFloatProfit = state.position.maxFloatProfit ?? 0;
+    state.position.maxFloatLoss = state.position.maxFloatLoss ?? 0;
+  }
   if (data.jumpDate && $("jumpDate")) $("jumpDate").value = data.jumpDate;
   if (typeof importDrawingsState === "function") importDrawingsState(data.drawings);
   renderStatement();
@@ -1729,9 +1956,22 @@ function setupJumpDateInputs() {
   $("jumpDate").max = state.config.last_date;
 }
 
+function isStaleBarsSnapshot(saved) {
+  if (!saved || saved.replayMode) return false;
+  const latest = state.config?.last_date;
+  if (!latest) return false;
+  if (saved.configLastDate && saved.configLastDate < latest) return true;
+  if (saved.loadedEnd && saved.loadedEnd < latest) return true;
+  return false;
+}
+
 async function loadBarsFromSnapshot(saved) {
   const end = state.config.last_date;
   const days = state.config.initial_trading_days || 30;
+
+  if (isStaleBarsSnapshot(saved)) {
+    return fetchBarsQuery({ days: String(days), end });
+  }
 
   if (saved?.replayMode && saved.jumpDate) {
     return loadBarsForBacktestFrom(saved.jumpDate);
@@ -1774,15 +2014,19 @@ function beginNewPracticeSession() {
   updatePositionInfoPanel();
 }
 
-function resetPracticeData() {
-  if (
-    !confirm(t("confirm.reset"))
-  ) {
+async function resetPracticeData() {
+  if (!confirm(t("confirm.reset"))) {
     return;
   }
   localStorage.removeItem(PRACTICE_STORAGE_KEY);
+  localStorage.removeItem(ORDER_RECORDS_STORAGE_KEY);
   beginNewPracticeSession();
   state.replayMode = false;
+  try {
+    await fetch(apiUrl("/api/orders"), { method: "DELETE" });
+  } catch (e) {
+    console.warn("清除磁盘下单记录失败", e);
+  }
   goToLatest();
   savePracticeStateNow();
 }
@@ -1942,25 +2186,638 @@ function checkBarHit(pos, bar) {
   return { hit: false };
 }
 
+function computeOrderPoints(rec) {
+  const entry = rec.entry;
+  let sl_points = null;
+  let tp_points = null;
+  if (entry != null && rec.sl != null && Number.isFinite(rec.sl)) {
+    sl_points = Math.abs(entry - rec.sl);
+  }
+  if (entry != null && rec.tp != null && Number.isFinite(rec.tp)) {
+    tp_points = Math.abs(rec.tp - entry);
+  }
+  return {
+    sl_points: sl_points != null ? Math.round(sl_points * 100) / 100 : null,
+    tp_points: tp_points != null ? Math.round(tp_points * 100) / 100 : null,
+  };
+}
+
+function normalizeOrderRecord(rec) {
+  if (!rec) return rec;
+  rec.entry_reason = String(rec.entry_reason ?? "");
+  rec.tp_reason = String(rec.tp_reason ?? "");
+  rec.sl_reason = String(rec.sl_reason ?? "");
+  rec.notes = String(rec.notes ?? "");
+  rec.lots = rec.lots ?? LOTS;
+  rec.max_float_profit = rec.max_float_profit ?? 0;
+  rec.max_float_loss = rec.max_float_loss ?? 0;
+  rec.is_win = (rec.net ?? 0) > 0;
+  if (rec.chartVisible == null) rec.chartVisible = true;
+  else rec.chartVisible = !!rec.chartVisible;
+  const pts = computeOrderPoints(rec);
+  rec.sl_points = pts.sl_points;
+  rec.tp_points = pts.tp_points;
+  return rec;
+}
+
+function parseUtcIsoToUnix(s) {
+  if (s == null) return null;
+  const t = String(s).trim();
+  if (!t) return null;
+  const iso = /Z$/i.test(t) || /[+-]\d{2}:?\d{2}$/.test(t) ? t : `${t}Z`;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return Math.floor(ms / 1000);
+}
+
+function parseOptionalNum(s) {
+  if (s == null || String(s).trim() === "") return null;
+  const n = Number(String(s).trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+function isXauSymbol(sym) {
+  const s = String(sym || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  return s === "XAUUSD" || s === "XAUUSDM";
+}
+
+function mapBrokerCloseReason(reason) {
+  const r = String(reason || "")
+    .toLowerCase()
+    .trim();
+  if (r === "sl") return "sl";
+  if (r === "tp") return "tp";
+  return "manual";
+}
+
+/** 解析经纪商成交导出 CSV（ticket / opening_time_utc / …） */
+function parseBrokerDealsCsv(text) {
+  const lines = String(text || "")
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .filter((l) => l.trim());
+  if (lines.length < 2) {
+    throw new Error(t("orders.import.empty"));
+  }
+  const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
+  const col = (name) => headers.indexOf(name);
+  const need = [
+    "ticket",
+    "opening_time_utc",
+    "closing_time_utc",
+    "type",
+    "symbol",
+    "opening_price",
+    "closing_price",
+  ];
+  for (const name of need) {
+    if (col(name) < 0) {
+      throw new Error(t("orders.import.badHeader", { col: name }));
+    }
+  }
+
+  const records = [];
+  let skippedNonXau = 0;
+  let skippedBad = 0;
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    const get = (name) => {
+      const j = col(name);
+      return j >= 0 ? (cols[j] ?? "").trim() : "";
+    };
+    if (!isXauSymbol(get("symbol"))) {
+      skippedNonXau++;
+      continue;
+    }
+    const id = parseOptionalNum(get("ticket"));
+    const openTs = parseUtcIsoToUnix(get("opening_time_utc"));
+    const closeTs = parseUtcIsoToUnix(get("closing_time_utc"));
+    const type = get("type").toLowerCase();
+    const entry = parseOptionalNum(get("opening_price"));
+    const close = parseOptionalNum(get("closing_price"));
+    if (
+      id == null ||
+      openTs == null ||
+      closeTs == null ||
+      (type !== "buy" && type !== "sell") ||
+      entry == null ||
+      close == null
+    ) {
+      skippedBad++;
+      continue;
+    }
+    const lots = parseOptionalNum(get("lots")) ?? LOTS;
+    const net = parseOptionalNum(get("profit")) ?? 0;
+    records.push({
+      id,
+      entry_reason: "",
+      tp_reason: "",
+      sl_reason: "",
+      notes: "",
+      direction: type,
+      open_time: fmtTime(openTs),
+      open_ts: openTs,
+      close_time: fmtTime(closeTs),
+      close_ts: closeTs,
+      entry,
+      close,
+      sl: parseOptionalNum(get("stop_loss")),
+      tp: parseOptionalNum(get("take_profit")),
+      lots,
+      net,
+      exit: mapBrokerCloseReason(get("close_reason")),
+      max_float_profit: 0,
+      max_float_loss: 0,
+      screenshot: null,
+      chartVisible: false,
+      imported: true,
+    });
+  }
+
+  return { records, skippedNonXau, skippedBad };
+}
+
+function syncNextOrderIdFromRecords() {
+  let max = 0;
+  for (const r of state.orderRecords) {
+    const n = Number(r.id);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  if (state.nextOrderId <= max) state.nextOrderId = max + 1;
+}
+
+function mergeImportedOrderRecords(incoming) {
+  const existing = new Set(state.orderRecords.map((r) => String(r.id)));
+  let added = 0;
+  let skippedDup = 0;
+  for (const raw of incoming) {
+    if (existing.has(String(raw.id))) {
+      skippedDup++;
+      continue;
+    }
+    state.orderRecords.push(normalizeOrderRecord({ ...raw }));
+    existing.add(String(raw.id));
+    added++;
+  }
+  state.orderRecords.sort((a, b) => (b.open_ts ?? 0) - (a.open_ts ?? 0));
+  syncNextOrderIdFromRecords();
+  return { added, skippedDup };
+}
+
+function setOrdersImportMsg(msg) {
+  const el = $("ordersImportMsg");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.hidden = !msg;
+}
+
+async function importOrdersFromFile(file) {
+  if (!file) return;
+  setOrdersImportMsg("");
+  try {
+    const text = await file.text();
+    const { records, skippedNonXau, skippedBad } = parseBrokerDealsCsv(text);
+    const { added, skippedDup } = mergeImportedOrderRecords(records);
+    renderStatement();
+    updateRrOverlay();
+    updateChart({ preserveView: true });
+    savePracticeStateNow();
+    setOrdersImportMsg(
+      t("orders.import.result", {
+        added,
+        skippedDup,
+        skippedNonXau,
+        skippedBad,
+      })
+    );
+  } catch (e) {
+    console.warn("import orders csv failed", e);
+    setOrdersImportMsg(e?.message || t("orders.import.failed"));
+  }
+}
+
+function focusOrderOnChart(rec) {
+  if (!rec?.open_ts || !state.allBars.length) return;
+  const first = state.allBars[0]?.time;
+  const last = state.allBars[state.allBars.length - 1]?.time;
+  if (first == null || last == null) return;
+  if (rec.open_ts < first || rec.open_ts > last) return;
+  const idx = findBarIndexByTime(rec.open_ts);
+  setCursor(idx, {
+    ensureVisible: true,
+    scrollToCursor: true,
+    skipReplayProgress: true,
+  });
+}
+
+function toggleOrderChartVisible(id) {
+  const rec = state.orderRecords.find((r) => String(r.id) === String(id));
+  if (!rec) return;
+  normalizeOrderRecord(rec);
+  rec.chartVisible = !rec.chartVisible;
+  if (rec.chartVisible) {
+    state.selectedOrderId = rec.id;
+    focusOrderOnChart(rec);
+  } else if (state.selectedOrderId === rec.id) {
+    state.selectedOrderId = null;
+  }
+  renderStatement();
+  updateRrOverlay();
+  updateChart({ preserveView: true });
+  savePracticeStateNow();
+}
+
+function updateOrderField(id, field, value) {
+  const rec = state.orderRecords.find((r) => String(r.id) === String(id));
+  if (!rec) return;
+  if (
+    field === "entry_reason" ||
+    field === "tp_reason" ||
+    field === "sl_reason" ||
+    field === "notes"
+  ) {
+    rec[field] = String(value ?? "").trim();
+  } else {
+    return;
+  }
+  normalizeOrderRecord(rec);
+  savePracticeStateNow();
+}
+
+function screenshotUrl(filename) {
+  return apiUrl(`/api/practice/screenshot/${encodeURIComponent(filename)}`);
+}
+
+async function readJsonResponse(res) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (text.trimStart().startsWith("<")) {
+      throw new Error(t("alert.screenshotNeedRestart"));
+    }
+    throw new Error(text.slice(0, 160) || res.statusText || `HTTP ${res.status}`);
+  }
+}
+
+function screenshotApiReady() {
+  return state.config?.features?.practice_screenshot === true;
+}
+
+async function deleteOrderScreenshot(filename) {
+  if (!filename) return;
+  try {
+    await fetch(screenshotUrl(filename), { method: "DELETE" });
+  } catch (e) {
+    console.warn("delete screenshot failed", e);
+  }
+}
+
+const SCREENSHOT_PICK_MIN = 24;
+
+function screenshotRenderScale() {
+  return Math.max(2, window.devicePixelRatio || 1);
+}
+
+/** html2canvas 克隆节点时同步 canvas 位图，避免高 DPI 下图表只显示一半 */
+function syncClonedCanvases(origRoot, cloneRoot) {
+  if (!origRoot || !cloneRoot) return;
+  const origList = origRoot.querySelectorAll("canvas");
+  const cloneList = cloneRoot.querySelectorAll("canvas");
+  cloneList.forEach((cloneCanvas, i) => {
+    const origCanvas = origList[i];
+    if (!origCanvas || !cloneCanvas.getContext) return;
+    const ctx = cloneCanvas.getContext("2d");
+    if (!ctx) return;
+    cloneCanvas.width = origCanvas.width;
+    cloneCanvas.height = origCanvas.height;
+    ctx.drawImage(origCanvas, 0, 0);
+  });
+}
+
+const screenshotPickState = {
+  active: false,
+  orderId: null,
+  patternMode: false,
+  dragging: false,
+  startX: 0,
+  startY: 0,
+  rect: null,
+};
+
+function chartAreaEl() {
+  return document.querySelector(".chart-area");
+}
+
+function screenshotPickEls() {
+  return {
+    root: $("screenshotPick"),
+    box: $("screenshotPickBox"),
+    bar: $("screenshotPickBar"),
+    hint: $("screenshotPickHint"),
+  };
+}
+
+function clientToChartAreaPoint(clientX, clientY) {
+  const area = chartAreaEl();
+  if (!area) return null;
+  const b = area.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(clientX - b.left, b.width)),
+    y: Math.max(0, Math.min(clientY - b.top, b.height)),
+  };
+}
+
+function normalizePickRect(x0, y0, x1, y1) {
+  const left = Math.min(x0, x1);
+  const top = Math.min(y0, y1);
+  const width = Math.abs(x1 - x0);
+  const height = Math.abs(y1 - y0);
+  return { left, top, width, height };
+}
+
+function applyScreenshotPickBox(rect) {
+  const { box, bar } = screenshotPickEls();
+  if (!box) return;
+  if (!rect || rect.width < 1 || rect.height < 1) {
+    box.classList.remove("visible");
+    bar?.classList.add("hidden");
+    return;
+  }
+  box.classList.add("visible");
+  box.style.left = `${rect.left}px`;
+  box.style.top = `${rect.top}px`;
+  box.style.width = `${rect.width}px`;
+  box.style.height = `${rect.height}px`;
+}
+
+function placeScreenshotPickBar(rect) {
+  const { bar } = screenshotPickEls();
+  if (!bar || !rect) return;
+  bar.classList.remove("hidden");
+  const barW = 160;
+  let left = rect.left + rect.width - barW;
+  let top = rect.top + rect.height + 8;
+  const area = chartAreaEl();
+  if (area) {
+    left = Math.max(8, Math.min(left, area.clientWidth - barW - 8));
+    if (top + 40 > area.clientHeight) top = Math.max(8, rect.top - 40);
+  }
+  bar.style.left = `${left}px`;
+  bar.style.top = `${top}px`;
+}
+
+function endScreenshotPick() {
+  screenshotPickState.active = false;
+  screenshotPickState.orderId = null;
+  screenshotPickState.patternMode = false;
+  screenshotPickState.dragging = false;
+  screenshotPickState.rect = null;
+  const { root, box, bar } = screenshotPickEls();
+  root?.classList.add("hidden");
+  root?.setAttribute("aria-hidden", "true");
+  chartAreaEl()?.classList.remove("screenshot-picking");
+  box?.classList.remove("visible");
+  bar?.classList.add("hidden");
+}
+
+function beginScreenshotPick(orderId) {
+  if (typeof html2canvas !== "function") {
+    alert(t("alert.screenshotFailed", { msg: "html2canvas" }));
+    return;
+  }
+  if (!screenshotApiReady()) {
+    alert(t("alert.screenshotNeedRestart"));
+    return;
+  }
+  pause();
+  const { root, hint, bar } = screenshotPickEls();
+  if (!root) return;
+  screenshotPickState.active = true;
+  screenshotPickState.orderId = orderId;
+  screenshotPickState.dragging = false;
+  screenshotPickState.rect = null;
+  root.classList.remove("hidden");
+  root.setAttribute("aria-hidden", "false");
+  chartAreaEl()?.classList.add("screenshot-picking");
+  if (hint) hint.textContent = t("screenshot.pickHint");
+  bar?.classList.add("hidden");
+  applyScreenshotPickBox(null);
+}
+
+async function captureChartAreaDataUrl(rect) {
+  const area = chartAreaEl();
+  if (!area || !rect) throw new Error("chart");
+  const renderScale = screenshotRenderScale();
+  const canvas = await html2canvas(area, {
+    scale: renderScale,
+    useCORS: true,
+    backgroundColor: "#0f1115",
+    logging: false,
+    width: area.offsetWidth,
+    height: area.offsetHeight,
+    onclone: (doc) => {
+      syncClonedCanvases(area, doc.querySelector(".chart-area"));
+    },
+  });
+  const scaleX = canvas.width / area.offsetWidth;
+  const scaleY = canvas.height / area.offsetHeight;
+  const sx = Math.max(0, Math.round(rect.left * scaleX));
+  const sy = Math.max(0, Math.round(rect.top * scaleY));
+  const sw = Math.min(canvas.width - sx, Math.max(1, Math.round(rect.width * scaleX)));
+  const sh = Math.min(canvas.height - sy, Math.max(1, Math.round(rect.height * scaleY)));
+  const crop = document.createElement("canvas");
+  crop.width = sw;
+  crop.height = sh;
+  const ctx = crop.getContext("2d");
+  if (!ctx) throw new Error("canvas");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  return crop.toDataURL("image/jpeg", 0.92);
+}
+
+async function uploadScreenshotRegion(orderId, rect) {
+  const dataUrl = await captureChartAreaDataUrl(rect);
+  const res = await fetch(apiUrl("/api/practice/screenshot"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order_id: orderId, image: dataUrl }),
+  });
+  const data = await readJsonResponse(res);
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  const rec = state.orderRecords.find((r) => String(r.id) === String(orderId));
+  if (rec) {
+    rec.screenshot = data.filename;
+    renderStatement();
+    savePracticeStateNow();
+  }
+}
+
+async function confirmScreenshotPick() {
+  const rect = screenshotPickState.rect;
+  if (screenshotPickState.patternMode) {
+    if (!rect || rect.width < SCREENSHOT_PICK_MIN || rect.height < SCREENSHOT_PICK_MIN) {
+      if (rect) alert(t("screenshot.pickTooSmall"));
+      return;
+    }
+    screenshotPickState.patternMode = false;
+    endScreenshotPick();
+    try {
+      await confirmPatternScreenshotPick(rect);
+    } catch (e) {
+      alert(t("pattern.alert.captureFailed", { msg: e.message }));
+    }
+    return;
+  }
+  const orderId = screenshotPickState.orderId;
+  if (!rect || orderId == null) {
+    endScreenshotPick();
+    return;
+  }
+  if (rect.width < SCREENSHOT_PICK_MIN || rect.height < SCREENSHOT_PICK_MIN) {
+    alert(t("screenshot.pickTooSmall"));
+    return;
+  }
+  endScreenshotPick();
+  try {
+    await uploadScreenshotRegion(orderId, rect);
+  } catch (e) {
+    alert(t("alert.screenshotFailed", { msg: e.message }));
+  }
+}
+
+function setupScreenshotPick() {
+  const root = $("screenshotPick");
+  if (!root) return;
+
+  const onPickDown = (e) => {
+    if (!screenshotPickState.active || e.button !== 0) return;
+    if (e.target.closest(".screenshot-pick-bar")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pt = clientToChartAreaPoint(e.clientX, e.clientY);
+    if (!pt) return;
+    screenshotPickState.dragging = true;
+    screenshotPickState.startX = pt.x;
+    screenshotPickState.startY = pt.y;
+    screenshotPickState.rect = { left: pt.x, top: pt.y, width: 0, height: 0 };
+    $("screenshotPickBar")?.classList.add("hidden");
+    applyScreenshotPickBox(screenshotPickState.rect);
+  };
+
+  const onPickMove = (e) => {
+    if (!screenshotPickState.active || !screenshotPickState.dragging) return;
+    const pt = clientToChartAreaPoint(e.clientX, e.clientY);
+    if (!pt) return;
+    screenshotPickState.rect = normalizePickRect(
+      screenshotPickState.startX,
+      screenshotPickState.startY,
+      pt.x,
+      pt.y
+    );
+    applyScreenshotPickBox(screenshotPickState.rect);
+  };
+
+  const onPickUp = (e) => {
+    if (!screenshotPickState.active || !screenshotPickState.dragging) return;
+    screenshotPickState.dragging = false;
+    const pt = clientToChartAreaPoint(e.clientX, e.clientY);
+    if (!pt) return;
+    const rect = normalizePickRect(
+      screenshotPickState.startX,
+      screenshotPickState.startY,
+      pt.x,
+      pt.y
+    );
+    screenshotPickState.rect = rect;
+    if (rect.width < SCREENSHOT_PICK_MIN || rect.height < SCREENSHOT_PICK_MIN) {
+      alert(t("screenshot.pickTooSmall"));
+      applyScreenshotPickBox(null);
+      screenshotPickState.rect = null;
+      return;
+    }
+    applyScreenshotPickBox(rect);
+    placeScreenshotPickBar(rect);
+  };
+
+  root.addEventListener("mousedown", onPickDown, true);
+  window.addEventListener("mousemove", onPickMove);
+  window.addEventListener("mouseup", onPickUp);
+
+  $("screenshotPickOk")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void confirmScreenshotPick();
+  });
+  $("screenshotPickCancel")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    endScreenshotPick();
+  });
+
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (!screenshotPickState.active) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        endScreenshotPick();
+      }
+    },
+    true
+  );
+}
+
+function beginOrderScreenshot(orderId) {
+  beginScreenshotPick(orderId);
+}
+
+function openScreenshotPreview(url) {
+  const dlg = $("screenshotPreview");
+  const img = $("screenshotPreviewImg");
+  if (!dlg || !img || !url) return;
+  img.removeAttribute("width");
+  img.removeAttribute("height");
+  img.style.width = "";
+  img.style.height = "";
+  img.src = url;
+  dlg.showModal();
+}
+
 function appendOrderRecord(exitPx, reason, bar) {
   const pos = state.position;
   if (!pos || !bar) return;
   const net = profitUsd(pos.direction, pos.entry, exitPx, pos.lots);
-  state.orderRecords.unshift({
-    id: pos.orderId,
-    direction: pos.direction,
-    open_time: fmtTime(pos.openTime),
-    open_ts: pos.openTime,
-    close_time: fmtTime(bar.time),
-    close_ts: bar.time,
-    entry: pos.entry,
-    close: exitPx,
-    sl: pos.sl,
-    tp: pos.tp,
-    lots: pos.lots,
-    net,
-    exit: reason,
-  });
+  state.orderRecords.unshift(
+    normalizeOrderRecord({
+      id: pos.orderId,
+      entry_reason: "",
+      tp_reason: "",
+      sl_reason: "",
+      notes: "",
+      direction: pos.direction,
+      open_time: fmtTime(pos.openTime),
+      open_ts: pos.openTime,
+      close_time: fmtTime(bar.time),
+      close_ts: bar.time,
+      entry: pos.entry,
+      close: exitPx,
+      sl: pos.sl,
+      tp: pos.tp,
+      lots: pos.lots,
+      net,
+      exit: reason,
+      max_float_profit: pos.maxFloatProfit ?? 0,
+      max_float_loss: pos.maxFloatLoss ?? 0,
+      screenshot: null,
+      chartVisible: true,
+    })
+  );
   state.selectedOrderId = pos.orderId;
   renderStatement();
   updateRrOverlay();
@@ -2006,6 +2863,8 @@ function openPosition(direction) {
     tp: null,
     lots: LOTS,
     openTime: bar.time,
+    maxFloatProfit: 0,
+    maxFloatLoss: 0,
   };
   refreshPositionLines();
   updatePositionInfoPanel();
@@ -2028,6 +2887,7 @@ function cycleSpeed() {
 
 function play() {
   if (!state.allBars.length) return;
+  syncPlaybackBarMs();
   state.playing = true;
   $("btnPlay").textContent = t("btn.pause");
   state.lastFrame = performance.now();
@@ -2037,40 +2897,27 @@ function play() {
 function pause() {
   state.playing = false;
   $("btnPlay").textContent = t("btn.play");
+  updateChart({ preserveView: true });
   if (typeof renderDrawings === "function") renderDrawings();
   scheduleReplayTfPrefetch();
+  scheduleSavePracticeState();
 }
 
-async function tick(now) {
+function tick(now) {
   if (!state.playing) return;
-  if (replayAdvanceBusy) {
-    requestAnimationFrame(tick);
-    return;
-  }
   if (now - state.lastFrame >= state.barMs / state.speed) {
     state.lastFrame = now;
     if (state.cursor >= state.allBars.length - 1) {
       pause();
       if (state.replayMode) {
-        const needsRefetch =
-          state.replayUntilTime != null &&
-          isCoarseReplayTimeframe() &&
-          state.loadedStart &&
-          state.loadedEnd;
         state.replayMode = false;
         state.replayUntilTime = null;
         state._chartSeriesLen = 0;
-        if (needsRefetch) {
-          refetchLoadedRange().then(() =>
-            updateChart({ preserveView: true, forceSetData: true })
-          );
-        } else {
-          updateChart({ preserveView: true, forceSetData: true });
-        }
+        updateChart({ preserveView: true, forceSetData: true });
       }
       return;
     }
-    await advanceReplayForward({ preserveView: true });
+    advanceReplayForward({ preserveView: true });
   }
   if (state.playing) requestAnimationFrame(tick);
 }
@@ -2176,24 +3023,85 @@ function renderSessionStats() {
   `;
 }
 
+async function deleteOrderRecord(id) {
+  const rec = state.orderRecords.find((r) => String(r.id) === String(id));
+  if (!rec) return;
+  if (!confirm(t("confirm.deleteOrder", { id }))) return;
+  if (rec.screenshot) await deleteOrderScreenshot(rec.screenshot);
+  state.orderRecords = state.orderRecords.filter((r) => String(r.id) !== String(id));
+  if (String(state.selectedOrderId) === String(id)) state.selectedOrderId = null;
+  renderStatement();
+  updateRrOverlay();
+  updateChart({ preserveView: true });
+  savePracticeStateNow();
+}
+
+function escAttr(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
+}
+
+function fmtPts(v) {
+  return v != null && Number.isFinite(v) ? v.toFixed(2) : "—";
+}
+
+function fmtLots(v) {
+  const n = v != null && Number.isFinite(Number(v)) ? Number(v) : LOTS;
+  return Number.isInteger(n) ? String(n) : String(n);
+}
+
+function fmtUsdSigned(v) {
+  const n = v ?? 0;
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
+}
+
 function renderStatement() {
   const body = $("stmtBody");
   body.innerHTML = "";
 
   state.orderRecords.forEach((r) => {
+    normalizeOrderRecord(r);
     const tr = document.createElement("tr");
     tr.dataset.id = String(r.id);
+    tr.classList.toggle("stmt-chart-on", !!r.chartVisible);
+    tr.title = t(r.chartVisible ? "orders.chart.hideHint" : "orders.chart.showHint");
     const pnlCls = r.net >= 0 ? "pnl-pos" : "pnl-neg";
     const dirCls = r.direction === "buy" ? "buy" : "sell";
     const exitCls = r.exit === "sl" ? "tag-sl" : r.exit === "tp" ? "tag-tp" : "";
+    const winCls = r.is_win ? "pnl-pos" : "pnl-neg";
+    const mfe = r.max_float_profit ?? 0;
+    const mae = r.max_float_loss ?? 0;
+    const closePx =
+      r.close != null && Number.isFinite(r.close) ? r.close.toFixed(2) : "—";
+    const shotCell = r.screenshot
+      ? `<img src="${screenshotUrl(r.screenshot)}" class="stmt-shot-thumb" data-action="preview" data-full-src="${screenshotUrl(r.screenshot)}" alt="" />
+         <button type="button" class="btn-shot-retake" data-action="screenshot" data-id="${r.id}">${t("table.screenshot.retake")}</button>`
+      : `<button type="button" class="btn-shot-capture" data-action="screenshot" data-id="${r.id}">${t("table.screenshot.capture")}</button>`;
     tr.innerHTML = `
       <td>${r.id}</td>
-      <td>${r.open_time}</td>
+      <td>${r.open_time || "—"}</td>
+      <td>${r.close_time || "—"}</td>
       <td class="${dirCls}">${tDir(r.direction)}</td>
-      <td>${r.entry.toFixed(2)}</td>
-      <td>${r.close.toFixed(2)}</td>
-      <td class="${pnlCls}">${r.net >= 0 ? "+" : ""}${r.net.toFixed(2)}</td>
+      <td class="stmt-readonly">${fmtLots(r.lots)}</td>
+      <td class="stmt-readonly">${r.entry != null ? r.entry.toFixed(2) : "—"}</td>
+      <td><input type="text" class="stmt-input stmt-text" data-field="entry_reason" data-id="${r.id}" value="${escAttr(r.entry_reason)}" placeholder="${escAttr(t("table.reason.placeholder"))}" /></td>
+      <td><input type="text" class="stmt-input stmt-text" data-field="tp_reason" data-id="${r.id}" value="${escAttr(r.tp_reason)}" placeholder="${escAttr(t("table.reason.placeholder"))}" /></td>
+      <td><input type="text" class="stmt-input stmt-text" data-field="sl_reason" data-id="${r.id}" value="${escAttr(r.sl_reason)}" placeholder="${escAttr(t("table.reason.placeholder"))}" /></td>
+      <td class="stmt-readonly">${fmtPts(r.sl_points)}</td>
+      <td class="stmt-readonly">${fmtPts(r.tp_points)}</td>
+      <td class="stmt-readonly pnl-pos">${fmtUsdSigned(mfe)}</td>
+      <td class="stmt-readonly pnl-neg">${mae < -0.005 ? mae.toFixed(2) : "0.00"}</td>
+      <td class="${winCls}">${r.is_win ? t("table.win") : t("table.loss")}</td>
+      <td class="stmt-screenshot">${shotCell}</td>
+      <td class="stmt-readonly">${closePx}</td>
+      <td class="${pnlCls}">${r.net >= 0 ? "+" : ""}${(r.net ?? 0).toFixed(2)}</td>
       <td class="${exitCls}">${tExit(r.exit)}</td>
+      <td><input type="text" class="stmt-input stmt-text stmt-notes" data-field="notes" data-id="${r.id}" value="${escAttr(r.notes)}" placeholder="${escAttr(t("table.notes.placeholder"))}" /></td>
+      <td class="stmt-actions">
+        <button type="button" class="btn-order-del" data-action="delete" data-id="${r.id}" title="${t("orders.delete.title")}" aria-label="${t("orders.delete.title")}">×</button>
+      </td>
     `;
     body.appendChild(tr);
   });
@@ -2320,12 +3228,73 @@ function bindEvents() {
   $("btnSpeed").addEventListener("click", cycleSpeed);
   $("btnJump").addEventListener("click", () => jumpToBacktestDate());
   $("btnRandomStart")?.addEventListener("click", startRandomBacktest);
-  $("btnResetData")?.addEventListener("click", resetPracticeData);
+  $("btnResetData")?.addEventListener("click", () => void resetPracticeData());
+  $("stmtBody")?.addEventListener("change", (e) => {
+    const el = e.target.closest("[data-field]");
+    if (!el) return;
+    const id = el.dataset.id;
+    const field = el.dataset.field;
+    if (!id || !field) return;
+    updateOrderField(id, field, el.value);
+  });
+  $("stmtBody")?.addEventListener(
+    "blur",
+    (e) => {
+      const el = e.target.closest("input.stmt-text[data-field]");
+      if (!el) return;
+      const id = el.dataset.id;
+      const field = el.dataset.field;
+      if (!id || !field) return;
+      updateOrderField(id, field, el.value);
+    },
+    true
+  );
+  $("stmtBody")?.addEventListener("click", async (e) => {
+    const delBtn = e.target.closest("[data-action='delete']");
+    if (delBtn) {
+      e.preventDefault();
+      const id = delBtn.dataset.id;
+      if (id) void deleteOrderRecord(id);
+      return;
+    }
+    const shotBtn = e.target.closest("[data-action='screenshot']");
+    if (shotBtn) {
+      e.preventDefault();
+      const id = shotBtn.dataset.id;
+      if (id) beginOrderScreenshot(id);
+      return;
+    }
+    const preview = e.target.closest("[data-action='preview']");
+    if (preview) {
+      openScreenshotPreview(preview.dataset.fullSrc || preview.currentSrc || preview.src);
+      return;
+    }
+    if (e.target.closest("input, button, a, select, textarea, label")) return;
+    const tr = e.target.closest("tr[data-id]");
+    if (!tr) return;
+    toggleOrderChartVisible(tr.dataset.id);
+  });
+  $("btnImportOrders")?.addEventListener("click", () => {
+    $("ordersImportFile")?.click();
+  });
+  $("ordersImportFile")?.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) void importOrdersFromFile(file);
+  });
+  $("screenshotPreviewClose")?.addEventListener("click", () => {
+    $("screenshotPreview")?.close();
+  });
+  $("screenshotPreview")?.addEventListener("click", (e) => {
+    if (e.target === $("screenshotPreview")) $("screenshotPreview").close();
+  });
 }
 
 async function init() {
   initChart();
   initI18n();
+  setupScreenshotPick();
+  setupPatternShortcuts();
   bindEvents();
   state.speed = SPEEDS[0];
   $("btnSpeed").textContent = "1x";
@@ -2334,6 +3303,16 @@ async function init() {
   state.config = await cfgRes.json();
   state.timeframe = state.config.default_timeframe || "5m";
   syncPlaybackBarMs();
+
+  try {
+    const diskOrders = await fetchOrderRecordsFromDisk();
+    await migrateOrderRecordsToDiskIfNeeded(diskOrders);
+  } catch (e) {
+    console.warn("加载磁盘下单记录失败，尝试本地迁移", e);
+    await migrateOrderRecordsToDiskIfNeeded(null).catch((err) =>
+      console.warn("迁移下单记录失败", err)
+    );
+  }
 
   const saved = loadPracticeSnapshot();
   if (saved?.timeframe) {
@@ -2345,11 +3324,12 @@ async function init() {
   updatePositionInfoPanel();
 
   if (saved) {
-    if (saved.replayMode) {
+    const staleBars = isStaleBarsSnapshot(saved);
+    if (saved.replayMode && !staleBars) {
       state.replayMode = true;
       state.replayUntilTime = saved.replayUntilTime ?? saved.cursorTime ?? null;
     }
-    setUiLoading(true, "loading.restore");
+    setUiLoading(true, staleBars ? "loading.refresh" : "loading.restore");
     try {
       const barData = await loadBarsFromSnapshot(saved);
       if (!barData.bars?.length) {
@@ -2358,6 +3338,12 @@ async function init() {
         applyBarsPayload(barData, { replace: true });
         setupJumpDateInputs();
         applyPracticeState(saved);
+        if (staleBars) {
+          state.replayMode = false;
+          state.replayUntilTime = null;
+          if ($("jumpDate")) $("jumpDate").value = state.config.last_date;
+          goToLatest();
+        }
         prefetchOtherTimeframes(state.loadedStart, state.loadedEnd);
       }
     } finally {
@@ -2368,6 +3354,8 @@ async function init() {
     prefetchOtherTimeframes(state.loadedStart, state.loadedEnd);
     savePracticeStateNow();
   }
+  await initPatternJournal();
+  await handlePatternRestoreFromUrl();
 }
 
 init().catch((e) => {

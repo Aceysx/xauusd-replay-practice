@@ -1,6 +1,23 @@
+.build-python-x86_64/
+.uv-python-x86/
 .venv-build/
+.venv-build-arm64/
+.venv-build-x86_64/
+.venv-build-universal2/
 build/
 dist/
 __pycache__/
 *.pyc
 .idea/
+.vscode/
+.DS_Store
+.cursor/
+
+# 本地用户数据（不入库）
+order_records.json
+pattern_cases.json
+pattern_screenshots/
+practice_screenshots/
+data/
+Statement.htm
+*.htm

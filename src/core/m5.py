@@ -28,6 +28,29 @@ _RESAMPLE_FREQ = {
     "4h": "4h",
 }
 
+# 由 M5 预聚合持久化的周期（读取时不再从 M5 实时 resample）
+PERSISTED_TIMEFRAMES: tuple[str, ...] = ("15m", "30m", "1h", "4h", "1d")
+
+_OHLC_GLOB_KEYS: dict[int, str] = {
+    1: "m1_glob",
+    5: "m5_glob",
+    15: "m15_glob",
+    30: "m30_glob",
+    60: "h1_glob",
+    240: "h4_glob",
+    1440: "d1_glob",
+}
+
+_OHLC_GLOB_DEFAULTS: dict[int, str] = {
+    1: "xauusd_xauusdm_m1_{date}.csv",
+    5: "xauusd_xauusdm_m5_{date}.csv",
+    15: "xauusd_xauusdm_m15_{date}.csv",
+    30: "xauusd_xauusdm_m30_{date}.csv",
+    60: "xauusd_xauusdm_h1_{date}.csv",
+    240: "xauusd_xauusdm_h4_{date}.csv",
+    1440: "xauusd_xauusdm_d1_{date}.csv",
+}
+
 
 def normalize_timeframe(tf: str | None) -> str:
     if tf and tf in TIMEFRAMES:
@@ -50,6 +73,24 @@ def _coerce_until(until: pd.Timestamp | None) -> pd.Timestamp | None:
     if u.tzinfo is not None:
         u = u.tz_convert("UTC").tz_localize(None)
     return u
+
+
+def _sort_by_timestamps(df: pd.DataFrame) -> pd.DataFrame:
+    """稳定排序，保证 drop_duplicates(keep='last') 保留后写入的数据。"""
+    if df.empty:
+        return df
+    return df.sort_values("timestamps", kind="mergesort")
+
+
+_OHLC_COLS = ("timestamps", "open", "high", "low", "close", "volume", "amount")
+
+
+def _concat_ohlc_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """拼接 OHLC CSV，跳过空表避免 pandas concat FutureWarning。"""
+    parts = [f for f in frames if f is not None and not f.empty]
+    if not parts:
+        return pd.DataFrame(columns=list(_OHLC_COLS))
+    return pd.concat(parts, ignore_index=True)
 
 
 def _bars_until(bars: pd.DataFrame, until: pd.Timestamp | None) -> pd.DataFrame:
@@ -124,6 +165,170 @@ def _cap_resampled_at_until(
     return pd.DataFrame(rows)
 
 
+def bars_until(bars: pd.DataFrame, until: pd.Timestamp | None) -> pd.DataFrame:
+    return _bars_until(bars, until)
+
+
+def load_bars_for_timeframe(
+    start_date: str,
+    end_date: str,
+    tf: str,
+    until: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """加载指定周期 K 线：各周期 CSV 优先；3h 等未持久化周期从 M5 resample。"""
+    tf = normalize_timeframe(tf)
+    mins = timeframe_minutes(tf)
+
+    if tf == "5m":
+        return resample_bars(load_m5_by_date_range(start_date, end_date), tf, until=until)
+
+    if tf == "1m":
+        if timeframe_has_csv(tf):
+            bars = load_ohlc_by_date_range(start_date, end_date, bar_minutes=1)
+            if until is not None:
+                return bars_until(bars, until)
+            return bars
+        return pd.DataFrame()
+
+    if is_persisted_timeframe(tf) and timeframe_has_csv(tf):
+        # 持久化 CSV 含完整区间 K 线；回放揭示由前端 cursor 控制。
+        return load_ohlc_by_date_range(start_date, end_date, bar_minutes=mins)
+
+    if tf in _RESAMPLE_FREQ or tf == "1d":
+        return resample_bars(load_m5_by_date_range(start_date, end_date), tf, until=until)
+
+    return pd.DataFrame()
+
+
+def _resample_m5_assign_files(
+    dates: list[str],
+    tf: str,
+    data_dir: Path,
+    m5_pattern: str,
+) -> dict[str, pd.DataFrame]:
+    """全局 resample M5，每根 K 线归入末根 M5 所在日文件（与 M5 按日读取一致）。"""
+    chunks: list[pd.DataFrame] = []
+    for d in dates:
+        fp = data_dir / m5_pattern.format(date=d)
+        if not fp.exists():
+            continue
+        day = pd.read_csv(fp)
+        if day.empty:
+            continue
+        day["timestamps"] = pd.to_datetime(day["timestamps"])
+        day["_file_date"] = d
+        chunks.append(day)
+    if not chunks:
+        return {}
+
+    m5 = (
+        _concat_ohlc_frames(chunks)
+        .pipe(_sort_by_timestamps)
+        .drop_duplicates("timestamps", keep="last")
+    )
+    m5 = m5.set_index("timestamps")
+
+    by_file: dict[str, list[dict]] = {}
+
+    if tf == "1d":
+        for day_val, grp in m5.groupby(m5.index.date):
+            if grp.empty:
+                continue
+            file_d = grp["_file_date"].iloc[-1]
+            by_file.setdefault(file_d, []).append(
+                {
+                    "timestamps": pd.Timestamp(day_val),
+                    "open": float(grp["open"].iloc[0]),
+                    "high": float(grp["high"].max()),
+                    "low": float(grp["low"].min()),
+                    "close": float(grp["close"].iloc[-1]),
+                }
+            )
+    else:
+        freq = _RESAMPLE_FREQ[tf]
+        for ts, grp in m5.groupby(
+            pd.Grouper(freq=freq, label="left", closed="left", origin="start_day")
+        ):
+            if grp.empty or grp["open"].isna().all():
+                continue
+            file_d = str(grp["_file_date"].iloc[-1])
+            by_file.setdefault(file_d, []).append(
+                {
+                    "timestamps": pd.Timestamp(ts),
+                    "open": float(grp["open"].iloc[0]),
+                    "high": float(grp["high"].max()),
+                    "low": float(grp["low"].min()),
+                    "close": float(grp["close"].iloc[-1]),
+                }
+            )
+
+    return {d: pd.DataFrame(rows).sort_values("timestamps").reset_index(drop=True) for d, rows in by_file.items()}
+
+
+def _write_ohlc_csv(path: Path, df: pd.DataFrame) -> None:
+    out = df.sort_values("timestamps").copy()
+    out["timestamps"] = pd.to_datetime(out["timestamps"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    if "volume" not in out.columns:
+        out["volume"] = 0
+    if "amount" not in out.columns:
+        out["amount"] = 0
+    cols = ["timestamps", "open", "high", "low", "close", "volume", "amount"]
+    out[cols].to_csv(path, index=False)
+
+
+def build_timeframe_csvs_from_m5(
+    timeframes: list[str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    force: bool = False,
+) -> dict[str, int]:
+    """从 M5 聚合写入各周期按日 CSV。返回 {tf: 写入文件数}。"""
+    tfs = timeframes or list(PERSISTED_TIMEFRAMES)
+    for tf in tfs:
+        if tf not in TIMEFRAMES:
+            raise ValueError(f"未知周期: {tf}")
+
+    dates = list_available_dates(bar_minutes=5)
+    if not dates:
+        raise FileNotFoundError("Files/ 下未找到 M5 CSV")
+    start_date = start_date or dates[0]
+    end_date = end_date or dates[-1]
+    if start_date not in dates:
+        start_date = dates[0]
+    if end_date not in dates:
+        end_date = dates[-1]
+    span = [d for d in dates if start_date <= d <= end_date]
+    if not span:
+        raise ValueError(f"区间 {start_date} ~ {end_date} 无 M5 数据")
+
+    paths = get_paths()
+    data_dir = paths["m5_dir"]
+    m5_pattern = paths["m5_glob"]
+    written: dict[str, int] = {}
+
+    for tf in tfs:
+        if tf == "5m":
+            continue
+        by_date = _resample_m5_assign_files(span, tf, data_dir, m5_pattern)
+        mins = timeframe_minutes(tf)
+        pattern = ohlc_glob_for_minutes(mins)
+        count = 0
+        write_dates = span if force else sorted(by_date.keys())
+        for d in write_dates:
+            chunk = by_date.get(d)
+            if chunk is None:
+                chunk = pd.DataFrame(
+                    columns=["timestamps", "open", "high", "low", "close", "volume", "amount"]
+                )
+            fp = data_dir / pattern.format(date=d)
+            if fp.exists() and not force:
+                continue
+            _write_ohlc_csv(fp, chunk)
+            count += 1
+        written[tf] = count
+    return written
+
+
 def resample_bars(
     bars: pd.DataFrame, tf: str, until: pd.Timestamp | None = None
 ) -> pd.DataFrame:
@@ -141,6 +346,8 @@ def resample_bars(
         if until is None:
             return df.reset_index(drop=True)
         return _bars_until(df, until).reset_index(drop=True)
+    if tf == "1m":
+        return pd.DataFrame()
     df = df.copy()
 
     full = _resample_m5_df(df, tf)
@@ -152,9 +359,27 @@ def resample_bars(
 
 def ohlc_glob_for_minutes(bar_minutes: int) -> str:
     paths = get_paths()
+    key = _OHLC_GLOB_KEYS.get(bar_minutes)
+    if key:
+        return paths[key]
     if bar_minutes <= 1:
         return paths["m1_glob"]
     return paths["m5_glob"]
+
+
+def is_persisted_timeframe(tf: str) -> bool:
+    return normalize_timeframe(tf) in PERSISTED_TIMEFRAMES
+
+
+def timeframe_has_csv(tf: str, data_dir: Path | None = None) -> bool:
+    """该周期是否已有至少一个持久化 CSV。"""
+    mins = timeframe_minutes(tf)
+    if mins not in _OHLC_GLOB_KEYS:
+        return False
+    paths = get_paths()
+    data_dir = data_dir or paths["m5_dir"]
+    scan = ohlc_scan_glob(mins)
+    return any(data_dir.glob(scan))
 
 
 def ohlc_scan_glob(bar_minutes: int) -> str:
@@ -207,13 +432,15 @@ def load_ohlc_range(
     while d <= end_d:
         fp = data_dir / pattern.format(date=d.isoformat())
         if fp.exists():
-            frames.append(pd.read_csv(fp))
+            day = pd.read_csv(fp)
+            if not day.empty:
+                frames.append(day)
         d += timedelta(days=1)
     if not frames:
         return pd.DataFrame()
-    bars = pd.concat(frames, ignore_index=True)
+    bars = _concat_ohlc_frames(frames)
     bars["timestamps"] = pd.to_datetime(bars["timestamps"])
-    bars = bars.sort_values("timestamps").drop_duplicates("timestamps")
+    bars = _sort_by_timestamps(bars).drop_duplicates("timestamps", keep="last")
     mask = (bars["timestamps"] >= pd.Timestamp(start) - pad) & (
         bars["timestamps"] <= pd.Timestamp(end) + pad
     )
@@ -323,4 +550,193 @@ def pick_random_trading_day(min_forward_days: int = 10) -> dict:
         "first_date": dates[0],
         "last_date": dates[-1],
         "min_forward_days": n,
+    }
+
+
+def parse_mt5_m5_export(
+    path: Path | str,
+    *,
+    broker_offset_hours: int = 0,
+) -> pd.DataFrame:
+    """解析 MT5 历史中心导出：date,time,OHLCV（无表头）或标准 timestamps CSV。"""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+
+    with path.open(encoding="utf-8", errors="replace") as f:
+        first = f.readline().strip().lower()
+
+    if first.startswith("timestamp") or first.startswith("date,"):
+        df = pd.read_csv(path)
+        if "timestamps" not in df.columns:
+            raise ValueError(f"{path} 缺少 timestamps 列")
+    else:
+        df = pd.read_csv(
+            path,
+            header=None,
+            names=["date", "time", "open", "high", "low", "close", "volume"],
+        )
+        date_s = df["date"].astype(str).str.replace(".", "-", regex=False)
+        time_s = df["time"].astype(str)
+        df["timestamps"] = pd.to_datetime(date_s + " " + time_s, errors="coerce")
+
+    df["timestamps"] = pd.to_datetime(df["timestamps"])
+    if broker_offset_hours:
+        df["timestamps"] = df["timestamps"] - pd.to_timedelta(broker_offset_hours, unit="h")
+
+    df = df.dropna(subset=["timestamps"])
+    for col in ("open", "high", "low", "close"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "volume" in df.columns:
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype(int)
+    else:
+        df["volume"] = 0
+    if "amount" not in df.columns:
+        df["amount"] = 0
+
+    return (
+        df[["timestamps", "open", "high", "low", "close", "volume", "amount"]]
+        .pipe(_sort_by_timestamps)
+        .drop_duplicates("timestamps", keep="last")
+        .reset_index(drop=True)
+    )
+
+
+def merge_ohlc_frames(frames: list[pd.DataFrame], *, keep: str = "last") -> pd.DataFrame:
+    merged = _concat_ohlc_frames(frames)
+    if merged.empty:
+        return merged
+    merged["timestamps"] = pd.to_datetime(merged["timestamps"])
+    return _sort_by_timestamps(merged).drop_duplicates("timestamps", keep=keep).reset_index(drop=True)
+
+
+def default_m5_file_date(ts) -> str:
+    """MT5 按日文件默认规则：23:55 归入下一交易日文件。"""
+    t = pd.Timestamp(ts)
+    if t.hour == 23 and t.minute == 55:
+        return (t + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    return t.strftime("%Y-%m-%d")
+
+
+def build_m5_file_date_lookup(
+    m5_dir: Path | None = None,
+    dates: list[str] | None = None,
+) -> dict[pd.Timestamp, str]:
+    """从现有按日 CSV 建立 timestamp → 文件日期 映射。"""
+    paths = get_paths()
+    data_dir = m5_dir or paths["m5_dir"]
+    pattern = paths["m5_glob"]
+    file_dates = dates or list_available_dates(data_dir, bar_minutes=5)
+    lookup: dict[pd.Timestamp, str] = {}
+    for d in file_dates:
+        fp = data_dir / pattern.format(date=d)
+        if not fp.exists():
+            continue
+        for ts in pd.read_csv(fp, usecols=["timestamps"])["timestamps"]:
+            lookup[pd.Timestamp(ts)] = d
+    return lookup
+
+
+def assign_m5_file_date(ts, lookup: dict[pd.Timestamp, str] | None = None) -> str:
+    t = pd.Timestamp(ts)
+    if lookup and t in lookup:
+        return lookup[t]
+    return default_m5_file_date(t)
+
+
+def load_m5_daily_files(
+    file_dates: list[str],
+    data_dir: Path | None = None,
+    pattern: str | None = None,
+) -> pd.DataFrame:
+    paths = get_paths()
+    data_dir = data_dir or paths["m5_dir"]
+    pattern = pattern or paths["m5_glob"]
+    frames: list[pd.DataFrame] = []
+    for d in file_dates:
+        fp = data_dir / pattern.format(date=d)
+        if fp.exists():
+            frames.append(pd.read_csv(fp))
+    return merge_ohlc_frames(frames, keep="first")
+
+
+def write_m5_daily_csvs(
+    df: pd.DataFrame,
+    *,
+    data_dir: Path | None = None,
+    pattern: str | None = None,
+    lookup: dict[pd.Timestamp, str] | None = None,
+    only_dates: list[str] | None = None,
+    dry_run: bool = False,
+) -> list[str]:
+    """按 MT5 按日规则写回 M5 CSV，返回写入的文件日期列表。"""
+    if df.empty:
+        return []
+
+    paths = get_paths()
+    data_dir = data_dir or paths["m5_dir"]
+    pattern = pattern or paths["m5_glob"]
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    work = df.copy()
+    work["timestamps"] = pd.to_datetime(work["timestamps"])
+    work["_file_date"] = work["timestamps"].map(lambda t: assign_m5_file_date(t, lookup))
+
+    written: list[str] = []
+    for file_date, chunk in work.groupby("_file_date", sort=True):
+        if only_dates is not None and file_date not in only_dates:
+            continue
+        out = chunk.drop(columns="_file_date").reset_index(drop=True)
+        fp = data_dir / pattern.format(date=file_date)
+        if dry_run:
+            written.append(file_date)
+            continue
+        _write_ohlc_csv(fp, out)
+        written.append(file_date)
+    return written
+
+
+def merge_m5_export_into_files(
+    source: Path | str,
+    *,
+    data_dir: Path | None = None,
+    broker_offset_hours: int = 0,
+    keep: str = "last",
+    dry_run: bool = False,
+) -> dict:
+    """把 MT5 导出 CSV 合并进 Files/ 按日 M5，重复时间戳保留 keep 侧。"""
+    paths = get_paths()
+    data_dir = data_dir or paths["m5_dir"]
+    incoming = parse_mt5_m5_export(source, broker_offset_hours=broker_offset_hours)
+    if incoming.empty:
+        raise ValueError("导入文件无有效 K 线")
+
+    lookup = build_m5_file_date_lookup(data_dir)
+    affected_dates = sorted({assign_m5_file_date(ts, lookup) for ts in incoming["timestamps"]})
+    existing = load_m5_daily_files(affected_dates, data_dir=data_dir)
+    before = len(existing)
+    overlap = 0
+    if not existing.empty:
+        overlap = incoming["timestamps"].isin(existing["timestamps"]).sum()
+
+    merged = merge_ohlc_frames([existing, incoming], keep=keep)
+    written = write_m5_daily_csvs(
+        merged,
+        data_dir=data_dir,
+        lookup=lookup,
+        only_dates=affected_dates,
+        dry_run=dry_run,
+    )
+
+    new_bars = max(0, len(merged) - before)
+    return {
+        "source_bars": len(incoming),
+        "existing_bars": before,
+        "merged_bars": len(merged),
+        "overlap_bars": int(overlap),
+        "new_bars": new_bars,
+        "affected_dates": affected_dates,
+        "written_dates": written,
+        "source_start": incoming["timestamps"].iloc[0],
+        "source_end": incoming["timestamps"].iloc[-1],
     }
