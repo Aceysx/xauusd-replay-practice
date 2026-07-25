@@ -46,22 +46,24 @@
 
 ### 01 · 回放主界面
 
-![img.png](./docs%2Fscreenshots%2Fimg1.png)
+![回放主界面](docs/screenshots/img.png)
 
 ### 02 · 模拟开仓
-[img.png](./docs%2Fscreenshots%2Fimg.png)
+
+![模拟开仓](docs/screenshots/img_1.png)
 
 ### 03 · 下单记录
 
-![img4.png](./docs%2Fscreenshots%2Fimg4.png)
+![下单记录](docs/screenshots/img4.png)
 
 ### 04 · 形态记录坞
 
-![img_2.png](./docs%2Fscreenshots%2Fimg_2.png)
+![形态记录坞](docs/screenshots/img_2.png)
 
 ### 05 · 形态档案详情
 
-![img_3.png](./docs%2Fscreenshots%2Fimg_3.png)
+![形态档案详情](docs/screenshots/img_3.png)
+
 
 ---
 
