@@ -2411,34 +2411,90 @@ async function importOrdersFromFile(file) {
 }
 
 function focusOrderOnChart(rec) {
-  if (!rec?.open_ts || !state.allBars.length) return;
+  if (!rec || !state.allBars.length) return false;
+  const ts = Number(rec.open_ts ?? rec.close_ts);
+  if (!Number.isFinite(ts)) return false;
   const first = state.allBars[0]?.time;
   const last = state.allBars[state.allBars.length - 1]?.time;
-  if (first == null || last == null) return;
-  if (rec.open_ts < first || rec.open_ts > last) return;
-  const idx = findBarIndexByTime(rec.open_ts);
+  if (first == null || last == null) return false;
+  if (ts < first || ts > last) return false;
+  const idx = findBarIndexByTime(ts);
   setCursor(idx, {
     ensureVisible: true,
     scrollToCursor: true,
     skipReplayProgress: true,
+    skipBarCheck: true,
   });
+  requestAnimationFrame(() => {
+    scrollChartToCursor();
+    updateRrOverlay();
+  });
+  return true;
+}
+
+/** 若当前未加载该时刻 K 线，则跳到开仓日附近再聚焦 */
+async function ensureOrderVisibleOnChart(rec) {
+  if (!rec) return;
+  const ts = Number(rec.open_ts ?? rec.close_ts);
+  if (!Number.isFinite(ts)) return;
+
+  pause();
+  const first = state.allBars[0]?.time;
+  const last = state.allBars[state.allBars.length - 1]?.time;
+  const inRange =
+    state.allBars.length > 0 &&
+    first != null &&
+    last != null &&
+    ts >= first &&
+    ts <= last;
+
+  if (!inRange) {
+    const dateStr = barDateKey(ts);
+    if ($("jumpDate")) $("jumpDate").value = dateStr;
+    setUiLoading(true, "loading.jump");
+    try {
+      clearBarsCache();
+      const data = await loadBarsForBacktestFrom(dateStr);
+      if (!data.bars?.length) {
+        alert(t("alert.noBars"));
+        return;
+      }
+      applyBarsPayload(data, { replace: true });
+      // 复盘查看历史成交：不进入盲测截断，直接看完整区间
+      state.replayMode = false;
+      state.replayUntilTime = null;
+    } finally {
+      setUiLoading(false);
+    }
+  }
+
+  focusOrderOnChart(rec);
 }
 
 function toggleOrderChartVisible(id) {
   const rec = state.orderRecords.find((r) => String(r.id) === String(id));
   if (!rec) return;
   normalizeOrderRecord(rec);
-  rec.chartVisible = !rec.chartVisible;
-  if (rec.chartVisible) {
-    state.selectedOrderId = rec.id;
-    focusOrderOnChart(rec);
-  } else if (state.selectedOrderId === rec.id) {
+  const alreadyFocused =
+    !!rec.chartVisible && String(state.selectedOrderId) === String(rec.id);
+
+  // 再点同一笔：隐藏开单区；点其他笔 / 首次：显示并聚焦到开仓时间
+  if (alreadyFocused) {
+    rec.chartVisible = false;
     state.selectedOrderId = null;
+    renderStatement();
+    updateRrOverlay();
+    updateChart({ preserveView: true });
+    savePracticeStateNow();
+    return;
   }
+
+  rec.chartVisible = true;
+  state.selectedOrderId = rec.id;
   renderStatement();
   updateRrOverlay();
   updateChart({ preserveView: true });
-  savePracticeStateNow();
+  void ensureOrderVisibleOnChart(rec).then(() => savePracticeStateNow());
 }
 
 function updateOrderField(id, field, value) {
