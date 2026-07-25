@@ -7,6 +7,9 @@
   let equityResizeObs = null;
   /** @type {Array} */
   let allRecords = [];
+  /** @type {object|null} */
+  let lastReport = null;
+  let equityPeriod = "day";
 
   function $(id) {
     return document.getElementById(id);
@@ -78,43 +81,126 @@
     if (el) el.innerHTML = "";
   }
 
-  function buildEquityData(curve) {
+  function normalizePointTime(t, fallbackPrev) {
+    let n = Number(t);
+    if (!Number.isFinite(n) || n < 1_000_000_000) {
+      n = (fallbackPrev > 0 ? fallbackPrev : 1_700_000_000) + 86400;
+    }
+    if (n <= fallbackPrev) n = fallbackPrev + 1;
+    return n;
+  }
+
+  /** UTC 周期起点（秒） */
+  function periodStartTs(ts, mode) {
+    const d = new Date(ts * 1000);
+    const y = d.getUTCFullYear();
+    const m = d.getUTCMonth();
+    const day = d.getUTCDate();
+    if (mode === "month") {
+      return Math.floor(Date.UTC(y, m, 1) / 1000);
+    }
+    if (mode === "week") {
+      // ISO 周：周一为起点
+      const utcMidnight = Date.UTC(y, m, day);
+      const dow = new Date(utcMidnight).getUTCDay(); // 0=Sun
+      const offset = (dow + 6) % 7;
+      return Math.floor((utcMidnight - offset * 86400000) / 1000);
+    }
+    // day
+    return Math.floor(Date.UTC(y, m, day) / 1000);
+  }
+
+  function buildTradeEquityData(curve) {
     let lastT = 0;
     const data = [];
     for (const p of curve || []) {
-      let t = Number(p.time);
-      if (!Number.isFinite(t) || t < 1_000_000_000) {
-        t = (lastT > 0 ? lastT : 1_700_000_000) + 86400;
-      }
-      if (t <= lastT) t = lastT + 1;
+      const t = normalizePointTime(p.time, lastT);
       lastT = t;
       data.push({ time: t, value: p.equity });
     }
     return data;
   }
 
-  function renderEquityCurve(report) {
-    const el = $("equityChart");
-    if (!el || typeof LightweightCharts === "undefined") return;
-    destroyEquityChart();
-    const data = buildEquityData(report?.equityCurve);
-    if (!data.length) return;
+  /** 取每个周期末的累计净值 */
+  function aggregateEquityCurve(curve, mode) {
+    if (!mode || mode === "trade") return buildTradeEquityData(curve);
+    const map = new Map();
+    let lastT = 0;
+    for (const p of curve || []) {
+      const t = normalizePointTime(p.time, lastT);
+      lastT = t;
+      const key = periodStartTs(t, mode);
+      map.set(key, Number(p.equity) || 0);
+    }
+    return [...map.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([time, value]) => ({ time, value }));
+  }
 
-    const fmtEquityTime = (time) => {
-      const d = new Date(time * 1000);
-      const locale = typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN";
+  function formatEquityTick(time, mode) {
+    const d = new Date(time * 1000);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    if (mode === "month") return `${y}-${m}`;
+    if (mode === "week") return `${y}-${m}-${day}`;
+    if (mode === "day") return `${y}-${m}-${day}`;
+    return `${y}-${m}-${day}`;
+  }
+
+  function formatEquityCrosshair(time, mode) {
+    const d = new Date(time * 1000);
+    const locale = typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN";
+    if (mode === "month") {
+      return d.toLocaleString(locale, {
+        year: "numeric",
+        month: "short",
+        timeZone: "UTC",
+      });
+    }
+    if (mode === "week" || mode === "day") {
       return (
         d.toLocaleString(locale, {
           year: "numeric",
           month: "2-digit",
           day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
           timeZone: "UTC",
-        }) + " UTC"
+        }) + (mode === "week" ? ` (${t("report.periodWeek")})` : " UTC")
       );
-    };
+    }
+    return (
+      d.toLocaleString(locale, {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: "UTC",
+      }) + " UTC"
+    );
+  }
+
+  function syncEquityPeriodButtons() {
+    document.querySelectorAll(".report-period-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.period === equityPeriod);
+    });
+  }
+
+  function setEquityPeriod(mode) {
+    if (!mode || mode === equityPeriod) return;
+    equityPeriod = mode;
+    syncEquityPeriodButtons();
+    if (lastReport) renderEquityCurve(lastReport);
+  }
+
+  function renderEquityCurve(report) {
+    const el = $("equityChart");
+    if (!el || typeof LightweightCharts === "undefined") return;
+    destroyEquityChart();
+    const mode = equityPeriod || "day";
+    const data = aggregateEquityCurve(report?.equityCurve, mode);
+    if (!data.length) return;
 
     equityChartApi = LightweightCharts.createChart(el, {
       width: el.clientWidth || 640,
@@ -132,13 +218,13 @@
         borderVisible: false,
         fixLeftEdge: true,
         fixRightEdge: true,
-        timeVisible: true,
+        timeVisible: mode === "trade",
         secondsVisible: false,
-        tickMarkFormatter: (time) => new Date(time * 1000).toISOString().slice(0, 10),
+        tickMarkFormatter: (time) => formatEquityTick(time, mode),
       },
       localization: {
         locale: typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN",
-        timeFormatter: fmtEquityTime,
+        timeFormatter: (time) => formatEquityCrosshair(time, mode),
       },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     });
@@ -350,6 +436,7 @@
     updateFilterCount(records.length, allRecords.length);
     const report =
       typeof computeMt5Report === "function" ? computeMt5Report(records) : null;
+    lastReport = report;
     if (!report) {
       destroyEquityChart();
       showEmpty(true);
@@ -364,6 +451,7 @@
     showEmpty(false);
     renderKpi(report);
     renderTable(report);
+    syncEquityPeriodButtons();
     requestAnimationFrame(() => renderEquityCurve(report));
   }
 
@@ -439,6 +527,10 @@
     $("reportDateFrom")?.addEventListener("change", onFilterChange);
     $("reportDateTo")?.addEventListener("change", onFilterChange);
     $("reportFilterReset")?.addEventListener("click", resetFilterRange);
+    document.querySelectorAll(".report-period-btn").forEach((btn) => {
+      btn.addEventListener("click", () => setEquityPeriod(btn.dataset.period));
+    });
+    syncEquityPeriodButtons();
   }
 
   window.onLocaleChange = function () {
