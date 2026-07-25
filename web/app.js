@@ -1346,8 +1346,29 @@ function renderSingleRrTrade(wrap, trade) {
     );
     placeRrHandle(hEntry, box, entryY, needBranch);
   } else {
-    placeRrEl(floatBandEl, box, 0, 0, false);
-    const net = trade.net ?? profitUsd(trade.direction, trade.entry, trade.close, trade.lots);
+    // Closed: shade entry→close path; MFE (points) as light favorable band when larger than close move
+    const closePx = trade.close;
+    const net =
+      trade.net ?? profitUsd(trade.direction, trade.entry, closePx, trade.lots);
+    let showedFloat = false;
+    if (closePx != null && Number.isFinite(closePx) && Math.abs(closePx - trade.entry) >= 0.005) {
+      const closeY = priceToY(closePx);
+      if (closeY != null) {
+        const rect = zoneRect(entryY, closeY);
+        placeRrEl(floatBandEl, box, rect.top, rect.height, true);
+        applyFloatBand(
+          floatBandEl,
+          trade.entry,
+          closePx,
+          refDist,
+          net >= 0 ? "profit" : "loss",
+          0.9
+        );
+        showedFloat = true;
+      }
+    }
+    if (!showedFloat) placeRrEl(floatBandEl, box, 0, 0, false);
+
     const nsign = net >= 0 ? "+" : "";
     const exitLabel =
       trade.exit === "sl"
