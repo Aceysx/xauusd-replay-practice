@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>订单管理</title>
-  <link rel="stylesheet" href="/styles.css?v=25" />
+  <link rel="stylesheet" href="/styles.css?v=26" />
 </head>
 <body class="orders-page">
   <header class="report-page-header orders-page-header">
@@ -38,6 +38,19 @@
         <div class="orders-section-head">
           <h2 class="report-section-title" data-i18n="ordersPage.tagStats">标签统计</h2>
           <p class="muted orders-section-hint" data-i18n="ordersPage.tagStatsHint">点击行可筛选下方订单；一笔多标签会计入每个标签</p>
+        </div>
+        <div class="orders-and-bar" id="ordersAndBar">
+          <div class="orders-and-label muted" data-i18n="ordersPage.and.title">AND 组合</div>
+          <div class="orders-and-chips" id="ordersAndChips" role="group" aria-label="AND tags"></div>
+          <div class="orders-and-actions">
+            <button type="button" id="ordersAndApply" class="report-filter-reset" data-i18n="ordersPage.and.apply">应用组合</button>
+            <button type="button" id="ordersAndSave" class="report-filter-reset" data-i18n="ordersPage.and.save">保存组合</button>
+            <button type="button" id="ordersAndClear" class="report-filter-reset" data-i18n="ordersPage.and.clear">清除组合</button>
+          </div>
+          <div class="orders-and-saved" id="ordersAndSaved" hidden>
+            <span class="muted orders-and-saved-label" data-i18n="ordersPage.and.saved">已存</span>
+            <div class="orders-and-saved-list" id="ordersAndSavedList"></div>
+          </div>
         </div>
         <div class="orders-stats-wrap">
           <table class="orders-stats-table" id="ordersTagStatsTable">
@@ -94,8 +107,8 @@
     </div>
   </main>
   <script>window.__API_BASE__ = "";</script>
-  <script src="/i18n.js?v=24"></script>
-  <script src="/order_stats.js?v=2"></script>
-  <script src="/orders_page.js?v=3"></script>
+  <script src="/i18n.js?v=25"></script>
+  <script src="/order_stats.js?v=3"></script>
+  <script src="/orders_page.js?v=4"></script>
 </body>
 </html>

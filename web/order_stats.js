@@ -346,6 +346,71 @@
     };
   }
 
+  const AND_TAG_PREFIX = "__and__:";
+
+  function normalizeAndTagIds(tagIds) {
+    const seen = new Set();
+    const out = [];
+    for (const raw of Array.isArray(tagIds) ? tagIds : []) {
+      const id = String(raw ?? "").trim();
+      if (!id || id.startsWith("__") || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    out.sort();
+    return out;
+  }
+
+  function makeAndTagKey(tagIds) {
+    const ids = normalizeAndTagIds(tagIds);
+    if (ids.length < 2) return null;
+    return AND_TAG_PREFIX + ids.join(",");
+  }
+
+  function parseAndTagKey(key) {
+    const s = String(key || "");
+    if (!s.startsWith(AND_TAG_PREFIX)) return null;
+    return normalizeAndTagIds(s.slice(AND_TAG_PREFIX.length).split(","));
+  }
+
+  function andTagLabel(tagIds, tagCatalog) {
+    const ids = normalizeAndTagIds(tagIds);
+    const catalog = Array.isArray(tagCatalog) ? tagCatalog : [];
+    const labelOf = (id) => {
+      const found = catalog.find((x) => String(x.id) === String(id));
+      return found?.label || String(id);
+    };
+    return ids.map(labelOf).join(" ∩ ");
+  }
+
+  function recordsMatchingAllTags(records, tagIds) {
+    const ids = normalizeAndTagIds(tagIds);
+    if (ids.length < 2) return [];
+    return (records || []).filter((r) => {
+      const set = new Set(
+        Array.isArray(r?.tags)
+          ? r.tags.map((x) => String(x ?? "").trim()).filter(Boolean)
+          : []
+      );
+      return ids.every((id) => set.has(id));
+    });
+  }
+
+  /**
+   * Stats for trades that contain ALL given tag ids (AND).
+   * @returns {object|null} enrichTagBucket-shaped row, or null if <2 tags
+   */
+  function computeTagAndStats(records, tagIds, tagCatalog) {
+    const ids = normalizeAndTagIds(tagIds);
+    if (ids.length < 2) return null;
+    const key = makeAndTagKey(ids);
+    const matched = recordsMatchingAllTags(records, ids);
+    const row = enrichTagBucket(key, andTagLabel(ids, tagCatalog), matched);
+    row.isAndCombo = true;
+    row.andTagIds = ids;
+    return row;
+  }
+
   function formatMt5Number(v, digits = 2) {
     if (v == null || !Number.isFinite(v)) return "—";
     if (v === Infinity) return "∞";
@@ -354,5 +419,10 @@
 
   global.computeMt5Report = computeMt5Report;
   global.computeTagStats = computeTagStats;
+  global.computeTagAndStats = computeTagAndStats;
+  global.makeAndTagKey = makeAndTagKey;
+  global.parseAndTagKey = parseAndTagKey;
+  global.normalizeAndTagIds = normalizeAndTagIds;
+  global.recordsMatchingAllTags = recordsMatchingAllTags;
   global.formatMt5Number = formatMt5Number;
 })(typeof window !== "undefined" ? window : globalThis);

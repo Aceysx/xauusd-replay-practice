@@ -4,6 +4,7 @@
   "use strict";
 
   const UNTAGGED_ID = "__untagged__";
+  const AND_COMBOS_KEY = "orders_tag_and_combos_v1";
   const TEXT_FIELDS = ["entry_reason", "tp_reason", "sl_reason", "notes"];
 
   /** @type {Array} */
@@ -13,6 +14,10 @@
   let tagCatalog = [];
   /** @type {string|null} */
   let activeTagId = null;
+  /** @type {string[]} currently selected AND tag ids */
+  let andTagIds = [];
+  /** @type {Array<{id:string,tagIds:string[],label:string}>} */
+  let savedAndCombos = [];
   /** @type {{ key: string, dir: "asc" | "desc" }} */
   let tagSort = { key: "n", dir: "desc" };
   let saveTimer = null;
@@ -196,10 +201,81 @@
     });
   }
 
+  function normalizeAndIds(ids) {
+    if (typeof normalizeAndTagIds === "function") return normalizeAndTagIds(ids);
+    const seen = new Set();
+    const out = [];
+    for (const raw of Array.isArray(ids) ? ids : []) {
+      const id = String(raw ?? "").trim();
+      if (!id || id.startsWith("__") || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    out.sort();
+    return out;
+  }
+
+  function andKeyFromIds(ids) {
+    if (typeof makeAndTagKey === "function") return makeAndTagKey(ids);
+    const sorted = normalizeAndIds(ids);
+    return sorted.length >= 2 ? `__and__:${sorted.join(",")}` : null;
+  }
+
+  function andIdsFromKey(key) {
+    if (typeof parseAndTagKey === "function") return parseAndTagKey(key);
+    const s = String(key || "");
+    if (!s.startsWith("__and__:")) return null;
+    return normalizeAndIds(s.slice("__and__:".length).split(","));
+  }
+
+  function isAndTagId(tagId) {
+    return !!andIdsFromKey(tagId);
+  }
+
+  function loadSavedAndCombos() {
+    try {
+      const raw = localStorage.getItem(AND_COMBOS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      savedAndCombos = Array.isArray(parsed)
+        ? parsed
+            .map((c) => {
+              const tagIds = normalizeAndIds(c?.tagIds);
+              if (tagIds.length < 2) return null;
+              return {
+                id: String(c?.id || andKeyFromIds(tagIds)),
+                tagIds,
+                label: String(c?.label || tagIds.map(tagLabel).join(" ∩ ")),
+              };
+            })
+            .filter(Boolean)
+        : [];
+    } catch {
+      savedAndCombos = [];
+    }
+  }
+
+  function persistSavedAndCombos() {
+    try {
+      localStorage.setItem(AND_COMBOS_KEY, JSON.stringify(savedAndCombos));
+    } catch (e) {
+      console.warn("save AND combos failed", e);
+    }
+  }
+
   function filterByTag(records, tagId) {
     if (!tagId) return records;
     if (tagId === UNTAGGED_ID) {
       return records.filter((r) => !normalizeTags(r.tags).length);
+    }
+    const andIds = andIdsFromKey(tagId);
+    if (andIds && andIds.length >= 2) {
+      if (typeof recordsMatchingAllTags === "function") {
+        return recordsMatchingAllTags(records, andIds);
+      }
+      return records.filter((r) => {
+        const set = new Set(normalizeTags(r.tags));
+        return andIds.every((id) => set.has(id));
+      });
     }
     return records.filter((r) => normalizeTags(r.tags).includes(tagId));
   }
@@ -306,6 +382,114 @@
     renderTagStats();
   }
 
+  function renderAndBar() {
+    const chipsEl = $("ordersAndChips");
+    if (chipsEl) {
+      chipsEl.innerHTML = "";
+      if (!tagCatalog.length) {
+        chipsEl.innerHTML = `<span class="muted orders-and-empty">${escAttr(t("ordersPage.and.noTags"))}</span>`;
+      } else {
+        const selected = new Set(andTagIds);
+        for (const tg of tagCatalog) {
+          const id = String(tg.id);
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "orders-and-chip" + (selected.has(id) ? " active" : "");
+          btn.dataset.tagId = id;
+          btn.textContent = tg.label || id;
+          btn.setAttribute("aria-pressed", selected.has(id) ? "true" : "false");
+          chipsEl.appendChild(btn);
+        }
+      }
+    }
+
+    const savedWrap = $("ordersAndSaved");
+    const savedList = $("ordersAndSavedList");
+    if (savedList) {
+      savedList.innerHTML = "";
+      for (const combo of savedAndCombos) {
+        const wrap = document.createElement("span");
+        wrap.className = "orders-and-saved-item";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "orders-and-saved-btn";
+        btn.dataset.comboId = combo.id;
+        btn.textContent = combo.label;
+        btn.title = combo.tagIds.map(tagLabel).join(" ∩ ");
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "orders-and-saved-del";
+        del.dataset.comboId = combo.id;
+        del.setAttribute("aria-label", t("ordersPage.and.removeSaved"));
+        del.textContent = "×";
+        wrap.appendChild(btn);
+        wrap.appendChild(del);
+        savedList.appendChild(wrap);
+      }
+    }
+    if (savedWrap) savedWrap.hidden = !savedAndCombos.length;
+  }
+
+  function toggleAndChip(tagId) {
+    const id = String(tagId ?? "").trim();
+    if (!id) return;
+    const set = new Set(andTagIds);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    andTagIds = normalizeAndIds([...set]);
+    renderAndBar();
+  }
+
+  function applyAndCombo() {
+    const ids = normalizeAndIds(andTagIds);
+    if (ids.length < 2) {
+      setSaveMsg(t("ordersPage.and.needTwo"), true);
+      return;
+    }
+    andTagIds = ids;
+    activeTagId = andKeyFromIds(ids);
+    renderAll();
+    $("ordersListTable")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function clearAndCombo() {
+    andTagIds = [];
+    if (isAndTagId(activeTagId)) activeTagId = null;
+    renderAll();
+  }
+
+  function saveCurrentAndCombo() {
+    const ids = normalizeAndIds(andTagIds);
+    if (ids.length < 2) {
+      setSaveMsg(t("ordersPage.and.needTwo"), true);
+      return;
+    }
+    const key = andKeyFromIds(ids);
+    const label = ids.map(tagLabel).join(" ∩ ");
+    const existing = savedAndCombos.findIndex((c) => c.id === key);
+    const entry = { id: key, tagIds: ids, label };
+    if (existing >= 0) savedAndCombos[existing] = entry;
+    else savedAndCombos.push(entry);
+    persistSavedAndCombos();
+    renderAndBar();
+    setSaveMsg(t("ordersPage.and.comboSaved"));
+  }
+
+  function loadAndCombo(comboId) {
+    const combo = savedAndCombos.find((c) => c.id === comboId);
+    if (!combo) return;
+    andTagIds = normalizeAndIds(combo.tagIds);
+    activeTagId = andKeyFromIds(andTagIds);
+    renderAll();
+    $("ordersListTable")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function removeSavedAndCombo(comboId) {
+    savedAndCombos = savedAndCombos.filter((c) => c.id !== comboId);
+    persistSavedAndCombos();
+    renderAndBar();
+  }
+
   function renderTagStats() {
     const body = $("ordersTagStatsBody");
     if (!body) return;
@@ -319,6 +503,37 @@
     const rows = [...(stats.rows || []), stats.untagged].filter(Boolean);
     rows.sort(compareTagRows);
     syncTagSortHeaders();
+
+    const andIds = normalizeAndIds(andTagIds);
+    let andRow = null;
+    if (andIds.length >= 2) {
+      andRow =
+        typeof computeTagAndStats === "function"
+          ? computeTagAndStats(dated, andIds, tagCatalog)
+          : null;
+      if (andRow) {
+        const tr = document.createElement("tr");
+        tr.dataset.tagId = andRow.tagId;
+        tr.classList.add("orders-and-row");
+        if (activeTagId === andRow.tagId) tr.classList.add("active");
+        const empty = !(andRow.n > 0);
+        const label = andRow.label || andIds.map(tagLabel).join(" ∩ ");
+        tr.innerHTML = `
+        <td><span class="orders-and-row-label">${escAttr(label)}</span></td>
+        <td>${empty ? "0" : String(andRow.n)}</td>
+        <td>${empty ? "—" : pct(andRow.winRate)}</td>
+        <td class="${pnlClass(andRow.totalNet)}">${empty ? "—" : fmtSigned(andRow.totalNet)}</td>
+        <td class="${pnlClass(andRow.expectedPayoff)}">${empty ? "—" : fmtSigned(andRow.expectedPayoff)}</td>
+        <td>${empty ? "—" : fNum(andRow.payoffRatio)}</td>
+        <td>${empty ? "—" : fNum(andRow.profitFactor)}</td>
+        <td class="pnl-pos">${empty ? "—" : fmtSigned(andRow.avgWin)}</td>
+        <td class="pnl-neg">${empty ? "—" : fmtSigned(andRow.avgLoss)}</td>
+        <td class="pnl-pos">${empty ? "—" : fNum(andRow.avgMfe)}</td>
+        <td class="pnl-neg">${empty ? "—" : fNum(andRow.avgMae)}</td>
+      `;
+        body.appendChild(tr);
+      }
+    }
 
     for (const row of rows) {
       const tr = document.createElement("tr");
@@ -341,6 +556,35 @@
       `;
       body.appendChild(tr);
     }
+  }
+
+  function renderAll() {
+    if (!allRecords.length) {
+      showEmpty(true);
+      updateFilterCount();
+      return;
+    }
+    showEmpty(false);
+    renderAndBar();
+    renderTagStats();
+    renderOrderList();
+    updateFilterCount();
+  }
+
+  function setActiveTag(tagId) {
+    if (isAndTagId(tagId)) {
+      const ids = andIdsFromKey(tagId) || [];
+      andTagIds = normalizeAndIds(ids);
+      if (activeTagId === tagId) activeTagId = null;
+      else activeTagId = tagId;
+    } else {
+      // single-tag / untagged: exit AND mode
+      andTagIds = [];
+      if (activeTagId === tagId) activeTagId = null;
+      else activeTagId = tagId;
+    }
+    renderAll();
+    $("ordersListTable")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function formatTagsSummary(tags) {
@@ -425,25 +669,6 @@
       `;
       body.appendChild(tr);
     }
-  }
-
-  function renderAll() {
-    if (!allRecords.length) {
-      showEmpty(true);
-      updateFilterCount();
-      return;
-    }
-    showEmpty(false);
-    renderTagStats();
-    renderOrderList();
-    updateFilterCount();
-  }
-
-  function setActiveTag(tagId) {
-    if (activeTagId === tagId) activeTagId = null;
-    else activeTagId = tagId;
-    renderAll();
-    $("ordersListTable")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function findRecord(id) {
@@ -555,11 +780,31 @@
       if (fromEl) fromEl.value = fromEl.min || "";
       if (toEl) toEl.value = toEl.max || "";
       activeTagId = null;
+      andTagIds = [];
       renderAll();
     });
     $("ordersTagFilterClear")?.addEventListener("click", () => {
       activeTagId = null;
       renderAll();
+    });
+
+    $("ordersAndChips")?.addEventListener("click", (e) => {
+      const chip = e.target.closest("button.orders-and-chip[data-tag-id]");
+      if (!chip) return;
+      toggleAndChip(chip.dataset.tagId);
+    });
+    $("ordersAndApply")?.addEventListener("click", () => applyAndCombo());
+    $("ordersAndSave")?.addEventListener("click", () => saveCurrentAndCombo());
+    $("ordersAndClear")?.addEventListener("click", () => clearAndCombo());
+    $("ordersAndSavedList")?.addEventListener("click", (e) => {
+      const del = e.target.closest("button.orders-and-saved-del[data-combo-id]");
+      if (del) {
+        e.preventDefault();
+        removeSavedAndCombo(del.dataset.comboId);
+        return;
+      }
+      const btn = e.target.closest("button.orders-and-saved-btn[data-combo-id]");
+      if (btn) loadAndCombo(btn.dataset.comboId);
     });
 
     $("ordersTagStatsTable")?.querySelector("thead")?.addEventListener("click", (e) => {
@@ -663,6 +908,7 @@
     if (typeof initI18n === "function") initI18n();
     document.documentElement.dataset.i18nTitle = "ordersPage.pageTitle";
     if (typeof applyI18n === "function") applyI18n();
+    loadSavedAndCombos();
     bindEvents();
     try {
       await loadData();

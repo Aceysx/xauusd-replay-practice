@@ -2207,6 +2207,113 @@ body.orders-page {
   margin: 0;
   font-size: 12px;
 }
+.orders-and-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 14px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel, var(--bg));
+}
+.orders-and-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+.orders-and-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1 1 200px;
+  min-width: 0;
+  align-items: center;
+}
+.orders-and-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.3;
+}
+.orders-and-chip.active {
+  border-color: var(--accent);
+  background: rgba(91, 156, 245, 0.14);
+  color: var(--accent);
+}
+.orders-and-chip:hover { border-color: var(--accent); }
+.orders-and-empty { font-size: 12px; }
+.orders-and-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.orders-and-saved {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  width: 100%;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+}
+.orders-and-saved-label {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.orders-and-saved-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.orders-and-saved-item {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.orders-and-saved-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orders-and-saved-btn:hover { color: var(--accent); }
+.orders-and-saved-del {
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 8px;
+  cursor: pointer;
+}
+.orders-and-saved-del:hover { color: var(--neg, #e25555); }
+.orders-stats-table tbody tr.orders-and-row {
+  background: rgba(91, 156, 245, 0.06);
+}
+.orders-stats-table tbody tr.orders-and-row.active {
+  background: rgba(91, 156, 245, 0.16);
+}
+.orders-and-row-label {
+  font-weight: 600;
+}
 .orders-manage-tags {
   font-size: 13px;
   color: var(--accent);
