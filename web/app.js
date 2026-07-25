@@ -3649,6 +3649,11 @@ async function init() {
     prefetchOtherTimeframes(state.loadedStart, state.loadedEnd);
     savePracticeStateNow();
   }
+  try {
+    await loadPatternTags();
+  } catch (e) {
+    console.warn("load order tags catalog failed", e);
+  }
   await initPatternJournal();
   renderStatement();
   await handlePatternRestoreFromUrl();
