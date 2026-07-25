@@ -943,23 +943,28 @@ function barsSinceOpen(pos) {
   return state.allBars.slice(openIdx, endIdx + 1);
 }
 
+/** MFE/MAE in price points (not USD, not × lots). */
 function computeExcursionFromBars(pos, bars) {
   let mfe = 0;
   let mae = 0;
+  const entry = pos.entry;
   for (const bar of bars) {
     let favorable;
     let adverse;
     if (pos.direction === "buy") {
-      favorable = profitUsd("buy", pos.entry, bar.high, pos.lots);
-      adverse = profitUsd("buy", pos.entry, bar.low, pos.lots);
+      favorable = bar.high - entry;
+      adverse = bar.low - entry;
     } else {
-      favorable = profitUsd("sell", pos.entry, bar.low, pos.lots);
-      adverse = profitUsd("sell", pos.entry, bar.high, pos.lots);
+      favorable = entry - bar.low;
+      adverse = entry - bar.high;
     }
     if (favorable > mfe) mfe = favorable;
     if (adverse < mae) mae = adverse;
   }
-  return { mfe, mae };
+  return {
+    mfe: Math.round(mfe * 100) / 100,
+    mae: Math.round(mae * 100) / 100,
+  };
 }
 
 function updatePositionExcursion() {
@@ -972,14 +977,12 @@ function updatePositionExcursion() {
     return;
   }
   const { mfe, mae } = computeExcursionFromBars(pos, bars);
-  pos.maxFloatProfit = Math.max(pos.maxFloatProfit ?? 0, mfe);
-  pos.maxFloatLoss = Math.min(pos.maxFloatLoss ?? 0, mae);
+  pos.maxFloatProfit = mfe;
+  pos.maxFloatLoss = mae;
 }
 
 function formatExcursionLine(mfe, mae) {
-  const ps = mfe > 0.005 ? `+${mfe.toFixed(2)}` : "0.00";
-  const ls = mae < -0.005 ? mae.toFixed(2) : "0.00";
-  return `${t("rr.maxFloatProfit")} ${ps} · ${t("rr.maxFloatLoss")} ${ls}`;
+  return `${t("rr.maxFloatProfit")} ${fmtPtsSigned(mfe)} · ${t("rr.maxFloatLoss")} ${fmtPtsMae(mae)}`;
 }
 
 function priceForPnlUsd(trade, pnlUsd) {
@@ -1909,8 +1912,9 @@ function applyPracticeState(data) {
   // 下单记录以磁盘为准，不从练习快照覆盖
   state.position = data.position || null;
   if (state.position) {
-    state.position.maxFloatProfit = state.position.maxFloatProfit ?? 0;
-    state.position.maxFloatLoss = state.position.maxFloatLoss ?? 0;
+    // Recompute from bars as points (snapshot may still hold old USD values).
+    state.position.maxFloatProfit = 0;
+    state.position.maxFloatLoss = 0;
   }
   if (data.jumpDate && $("jumpDate")) $("jumpDate").value = data.jumpDate;
   if (typeof importDrawingsState === "function") importDrawingsState(data.drawings);
@@ -2448,25 +2452,32 @@ function applyExcursionToRecord(rec, bars) {
     rec.max_float_profit = rec.max_float_profit ?? 0;
     rec.max_float_loss = rec.max_float_loss ?? 0;
     rec.excursion_ready = true;
+    rec.excursion_unit = "points";
     return false;
   }
   const { mfe, mae } = computeExcursionFromBars(
     {
       direction: rec.direction,
       entry: rec.entry,
-      lots: rec.lots ?? LOTS,
     },
     windowBars
   );
   rec.max_float_profit = mfe;
   rec.max_float_loss = mae;
   rec.excursion_ready = true;
+  rec.excursion_unit = "points";
   return true;
 }
 
 function recordsNeedingExcursion(records) {
   return (records || []).filter(
-    (r) => r && r.imported && r.excursion_ready !== true && r.open_ts != null && r.close_ts != null
+    (r) =>
+      r &&
+      r.open_ts != null &&
+      r.close_ts != null &&
+      r.entry != null &&
+      r.direction &&
+      r.excursion_unit !== "points"
   );
 }
 
@@ -2482,10 +2493,25 @@ async function fillExcursionsForRecords(records) {
   const bars = await fetchBarsRangeChunked(barDateKey(minTs), barDateKey(maxTs));
   let filled = 0;
   for (const r of pending) {
-    if (applyExcursionToRecord(r, bars)) filled += 1;
-    else filled += 1; // 无 K 线也标记完成，避免反复重试
+    applyExcursionToRecord(r, bars);
+    filled += 1;
   }
   return { filled, bars: bars.length };
+}
+
+/** Recompute MFE/MAE as price points for records still on old USD/lot units. */
+async function migrateExcursionsToPointsIfNeeded() {
+  const pending = recordsNeedingExcursion(state.orderRecords);
+  if (!pending.length) return;
+  try {
+    await fillExcursionsForRecords(pending);
+    renderStatement();
+    updateRrOverlay();
+    clearTimeout(orderRecordsSaveTimer);
+    await persistOrderRecordsToDisk();
+  } catch (e) {
+    console.warn("migrate MFE/MAE to points failed", e);
+  }
 }
 
 async function importOrdersFromFile(file) {
@@ -3007,6 +3033,8 @@ function appendOrderRecord(exitPx, reason, bar) {
       exit: reason,
       max_float_profit: pos.maxFloatProfit ?? 0,
       max_float_loss: pos.maxFloatLoss ?? 0,
+      excursion_unit: "points",
+      excursion_ready: true,
       screenshot: null,
       chartVisible: true,
     })
@@ -3182,6 +3210,17 @@ function fmtPts(v) {
   return v != null && Number.isFinite(v) ? v.toFixed(2) : "—";
 }
 
+function fmtPtsSigned(v) {
+  const n = v ?? 0;
+  if (!(n > 0.005)) return "0.00";
+  return `+${n.toFixed(2)}`;
+}
+
+function fmtPtsMae(v) {
+  const n = v ?? 0;
+  return n < -0.005 ? n.toFixed(2) : "0.00";
+}
+
 function fmtLots(v) {
   const n = v != null && Number.isFinite(Number(v)) ? Number(v) : LOTS;
   return Number.isInteger(n) ? String(n) : String(n);
@@ -3226,8 +3265,8 @@ function renderStatement() {
       <td><input type="text" class="stmt-input stmt-text" data-field="sl_reason" data-id="${r.id}" value="${escAttr(r.sl_reason)}" placeholder="${escAttr(t("table.reason.placeholder"))}" /></td>
       <td class="stmt-readonly">${fmtPts(r.sl_points)}</td>
       <td class="stmt-readonly">${fmtPts(r.tp_points)}</td>
-      <td class="stmt-readonly pnl-pos">${fmtUsdSigned(mfe)}</td>
-      <td class="stmt-readonly pnl-neg">${mae < -0.005 ? mae.toFixed(2) : "0.00"}</td>
+      <td class="stmt-readonly pnl-pos">${fmtPtsSigned(mfe)}</td>
+      <td class="stmt-readonly pnl-neg">${fmtPtsMae(mae)}</td>
       <td class="${winCls}">${r.is_win ? t("table.win") : t("table.loss")}</td>
       <td class="stmt-screenshot">${shotCell}</td>
       <td class="stmt-readonly">${closePx}</td>
@@ -3457,6 +3496,7 @@ async function init() {
   renderStatement();
   renderSessionStats();
   updatePositionInfoPanel();
+  void migrateExcursionsToPointsIfNeeded();
 
   if (saved) {
     const staleBars = isStaleBarsSnapshot(saved);
