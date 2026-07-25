@@ -429,12 +429,14 @@ async function switchTimeframe(tf) {
       preserveView: false,
       fixStaleRange: false,
       forceSetData: true,
+      fitPriceScale: true,
       skipReplayProgress: true,
     });
     requestAnimationFrame(() => {
       scrollChartToCursor();
       requestAnimationFrame(() => {
         scrollChartToCursor();
+        fitPriceScaleToVisible();
         syncChartOverlays();
       });
     });
@@ -773,6 +775,15 @@ function buildChartMarkers() {
   return markers;
 }
 
+function fitPriceScaleToVisible() {
+  if (!state.chartReady || !chart) return;
+  try {
+    chart.priceScale("right").applyOptions({ autoScale: true });
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 function updateChart(opts = {}) {
   if (!state.chartReady || !candleSeries) return;
   const lite = !!opts.lite;
@@ -798,6 +809,7 @@ function updateChart(opts = {}) {
     candleSeries.update(bars[bars.length - 1]);
     state._chartSeriesLen = bars.length;
   } else if (lenChanged || opts.forceSetData) {
+    if (opts.fitPriceScale) fitPriceScaleToVisible();
     candleSeries.setData(bars);
     state._chartSeriesLen = bars.length;
   } else {
@@ -851,6 +863,7 @@ function setCursor(idx, opts = {}) {
     preserveView: opts.preserveView ?? !scrollToCursor,
     fixStaleRange: !!opts.fixStaleRange,
     forceSetData: !!opts.forceSetData,
+    fitPriceScale: !!opts.fitPriceScale,
     logicalRangeShift: opts.logicalRangeShift || 0,
   });
   if (!opts.skipBarCheck) checkPositionOnBar(bar);
