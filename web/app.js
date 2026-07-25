@@ -85,6 +85,10 @@ function refreshUiLocale() {
     $("btnRandomStart").textContent = t("btn.randomStart");
   updateBarInfoPanel(state.barInfoBar ?? currentBar());
   if (state.chartReady && candleSeries) updateChart({ preserveView: true });
+  const reportDlg = $("ordersReportDialog");
+  if (reportDlg?.open) {
+    renderOrdersReportTable(computeSessionStats());
+  }
 }
 
 window.onLocaleChange = refreshUiLocale;
