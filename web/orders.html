@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>订单管理</title>
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
-  <link rel="stylesheet" href="/styles.css?v=27" />
+  <link rel="stylesheet" href="/styles.css?v=28" />
 </head>
 <body class="orders-page">
   <header class="report-page-header orders-page-header">
@@ -36,63 +36,69 @@
 
     <div id="ordersContent" class="orders-content hidden">
       <section class="orders-stats-card">
-        <div class="orders-section-head">
-          <h2 class="report-section-title" data-i18n="ordersPage.tagStats">标签统计</h2>
-          <p class="muted orders-section-hint" data-i18n="ordersPage.tagStatsHint">点击行可筛选下方订单；一笔多标签会计入每个标签</p>
-        </div>
-        <div class="orders-and-bar" id="ordersAndBar">
-          <div class="orders-and-label muted" data-i18n="ordersPage.and.title">AND 组合</div>
-          <div class="orders-and-chips" id="ordersAndChips" role="group" aria-label="AND tags"></div>
-          <div class="orders-and-actions">
-            <button type="button" id="ordersAndApply" class="report-filter-reset" data-i18n="ordersPage.and.apply">应用组合</button>
-            <button type="button" id="ordersAndSave" class="report-filter-reset" data-i18n="ordersPage.and.save">保存组合</button>
-            <button type="button" id="ordersAndClear" class="report-filter-reset" data-i18n="ordersPage.and.clear">清除组合</button>
+        <div class="orders-section-head orders-stats-card-head">
+          <div class="report-period-tabs orders-view-tabs" role="tablist" aria-label="Tag views">
+            <button type="button" class="report-period-btn orders-view-tab active" data-view="stats" role="tab" aria-selected="true" data-i18n="ordersPage.tagStats">标签统计</button>
+            <button type="button" class="report-period-btn orders-view-tab" data-view="chart" role="tab" aria-selected="false" data-i18n="ordersPage.chart.title">标签走势</button>
           </div>
-          <div class="orders-and-saved" id="ordersAndSaved" hidden>
-            <span class="muted orders-and-saved-label" data-i18n="ordersPage.and.saved">已存</span>
-            <div class="orders-and-saved-list" id="ordersAndSavedList"></div>
-          </div>
+          <p class="muted orders-section-hint" id="ordersStatsHint" data-i18n="ordersPage.tagStatsHint">点击行可筛选下方订单；一笔多标签会计入每个标签</p>
+          <p class="muted orders-section-hint" id="ordersChartHint" hidden data-i18n="ordersPage.chart.hint">多选标签叠加；按日/周/月查看笔数或盈利</p>
         </div>
-        <div class="orders-stats-wrap">
-          <table class="orders-stats-table" id="ordersTagStatsTable">
-            <thead>
-              <tr>
-                <th class="orders-sort-th" data-sort="label" data-i18n="ordersPage.col.tag">标签</th>
-                <th class="orders-sort-th" data-sort="n" data-i18n="ordersPage.col.n">笔数</th>
-                <th class="orders-sort-th" data-sort="winRate" data-i18n="ordersPage.col.winRate">胜率</th>
-                <th class="orders-sort-th" data-sort="totalNet" data-i18n="ordersPage.col.totalNet">净盈亏</th>
-                <th class="orders-sort-th" data-sort="expectedPayoff" data-i18n="ordersPage.col.expected">期望</th>
-                <th class="orders-sort-th" data-sort="payoffRatio" data-i18n="ordersPage.col.payoff">盈亏比</th>
-                <th class="orders-sort-th" data-sort="profitFactor" data-i18n="ordersPage.col.pf">盈利因子</th>
-                <th class="orders-sort-th" data-sort="avgWin" data-i18n="ordersPage.col.avgWin">均盈</th>
-                <th class="orders-sort-th" data-sort="avgLoss" data-i18n="ordersPage.col.avgLoss">均亏</th>
-                <th class="orders-sort-th" data-sort="avgMfe" data-i18n="ordersPage.col.avgMfe">均MFE</th>
-                <th class="orders-sort-th" data-sort="avgMae" data-i18n="ordersPage.col.avgMae">均MAE</th>
-              </tr>
-            </thead>
-            <tbody id="ordersTagStatsBody"></tbody>
-          </table>
-        </div>
-      </section>
 
-      <section class="orders-tag-chart-card" id="ordersTagChartCard">
-        <div class="orders-tag-chart-head">
-          <h2 class="report-section-title" data-i18n="ordersPage.chart.title">标签走势</h2>
-          <div class="orders-tag-chart-tabs">
-            <div class="report-period-tabs" role="group" aria-label="Period">
-              <button type="button" class="report-period-btn orders-chart-period active" data-period="day" data-i18n="report.periodDay">按天</button>
-              <button type="button" class="report-period-btn orders-chart-period" data-period="week" data-i18n="report.periodWeek">按周</button>
-              <button type="button" class="report-period-btn orders-chart-period" data-period="month" data-i18n="report.periodMonth">按月</button>
+        <div class="orders-stats-pane" id="ordersStatsPane" role="tabpanel">
+          <div class="orders-and-bar" id="ordersAndBar">
+            <div class="orders-and-label muted" data-i18n="ordersPage.and.title">AND 组合</div>
+            <div class="orders-and-chips" id="ordersAndChips" role="group" aria-label="AND tags"></div>
+            <div class="orders-and-actions">
+              <button type="button" id="ordersAndApply" class="report-filter-reset" data-i18n="ordersPage.and.apply">应用组合</button>
+              <button type="button" id="ordersAndSave" class="report-filter-reset" data-i18n="ordersPage.and.save">保存组合</button>
+              <button type="button" id="ordersAndClear" class="report-filter-reset" data-i18n="ordersPage.and.clear">清除组合</button>
             </div>
-            <div class="report-period-tabs" role="group" aria-label="Metric">
-              <button type="button" class="report-period-btn orders-chart-metric active" data-metric="count" data-i18n="ordersPage.chart.count">笔数</button>
-              <button type="button" class="report-period-btn orders-chart-metric" data-metric="pnl" data-i18n="ordersPage.chart.pnl">盈利</button>
+            <div class="orders-and-saved" id="ordersAndSaved" hidden>
+              <span class="muted orders-and-saved-label" data-i18n="ordersPage.and.saved">已存</span>
+              <div class="orders-and-saved-list" id="ordersAndSavedList"></div>
             </div>
           </div>
+          <div class="orders-stats-wrap">
+            <table class="orders-stats-table" id="ordersTagStatsTable">
+              <thead>
+                <tr>
+                  <th class="orders-sort-th" data-sort="label" data-i18n="ordersPage.col.tag">标签</th>
+                  <th class="orders-sort-th" data-sort="n" data-i18n="ordersPage.col.n">笔数</th>
+                  <th class="orders-sort-th" data-sort="winRate" data-i18n="ordersPage.col.winRate">胜率</th>
+                  <th class="orders-sort-th" data-sort="totalNet" data-i18n="ordersPage.col.totalNet">净盈亏</th>
+                  <th class="orders-sort-th" data-sort="expectedPayoff" data-i18n="ordersPage.col.expected">期望</th>
+                  <th class="orders-sort-th" data-sort="payoffRatio" data-i18n="ordersPage.col.payoff">盈亏比</th>
+                  <th class="orders-sort-th" data-sort="profitFactor" data-i18n="ordersPage.col.pf">盈利因子</th>
+                  <th class="orders-sort-th" data-sort="avgWin" data-i18n="ordersPage.col.avgWin">均盈</th>
+                  <th class="orders-sort-th" data-sort="avgLoss" data-i18n="ordersPage.col.avgLoss">均亏</th>
+                  <th class="orders-sort-th" data-sort="avgMfe" data-i18n="ordersPage.col.avgMfe">均MFE</th>
+                  <th class="orders-sort-th" data-sort="avgMae" data-i18n="ordersPage.col.avgMae">均MAE</th>
+                </tr>
+              </thead>
+              <tbody id="ordersTagStatsBody"></tbody>
+            </table>
+          </div>
         </div>
-        <div class="orders-tag-chart-chips" id="ordersTagChartChips" role="group" aria-label="Chart tags"></div>
-        <p class="muted orders-tag-chart-empty" id="ordersTagChartEmpty" hidden data-i18n="ordersPage.chart.empty">当前筛选下暂无数据</p>
-        <div id="ordersTagChart" class="orders-tag-chart report-equity-chart"></div>
+
+        <div class="orders-chart-pane" id="ordersChartPane" role="tabpanel" hidden>
+          <div class="orders-tag-chart-head">
+            <div class="orders-tag-chart-tabs">
+              <div class="report-period-tabs" role="group" aria-label="Period">
+                <button type="button" class="report-period-btn orders-chart-period active" data-period="day" data-i18n="report.periodDay">按天</button>
+                <button type="button" class="report-period-btn orders-chart-period" data-period="week" data-i18n="report.periodWeek">按周</button>
+                <button type="button" class="report-period-btn orders-chart-period" data-period="month" data-i18n="report.periodMonth">按月</button>
+              </div>
+              <div class="report-period-tabs" role="group" aria-label="Metric">
+                <button type="button" class="report-period-btn orders-chart-metric active" data-metric="count" data-i18n="ordersPage.chart.count">笔数</button>
+                <button type="button" class="report-period-btn orders-chart-metric" data-metric="pnl" data-i18n="ordersPage.chart.pnl">盈利</button>
+              </div>
+            </div>
+          </div>
+          <div class="orders-tag-chart-chips" id="ordersTagChartChips" role="group" aria-label="Chart tags"></div>
+          <p class="muted orders-tag-chart-empty" id="ordersTagChartEmpty" hidden data-i18n="ordersPage.chart.empty">当前筛选下暂无数据</p>
+          <div id="ordersTagChart" class="orders-tag-chart report-equity-chart"></div>
+        </div>
       </section>
 
       <section class="orders-list-card">
@@ -128,8 +134,8 @@
     </div>
   </main>
   <script>window.__API_BASE__ = "";</script>
-  <script src="/i18n.js?v=26"></script>
+  <script src="/i18n.js?v=27"></script>
   <script src="/order_stats.js?v=4"></script>
-  <script src="/orders_page.js?v=5"></script>
+  <script src="/orders_page.js?v=6"></script>
 </body>
 </html>

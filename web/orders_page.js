@@ -24,6 +24,8 @@
   let chartPeriod = "day";
   /** @type {"count"|"pnl"} */
   let chartMetric = "count";
+  /** @type {"stats"|"chart"} */
+  let statsView = "stats";
   /** @type {string[]} */
   let chartTagIds = [];
   let chartTagIdsManual = false;
@@ -578,6 +580,36 @@
     }
   }
 
+  function syncStatsView() {
+    const showChart = statsView === "chart";
+    const statsPane = $("ordersStatsPane");
+    const chartPane = $("ordersChartPane");
+    const statsHint = $("ordersStatsHint");
+    const chartHint = $("ordersChartHint");
+    if (statsPane) statsPane.hidden = showChart;
+    if (chartPane) chartPane.hidden = !showChart;
+    if (statsHint) statsHint.hidden = showChart;
+    if (chartHint) chartHint.hidden = !showChart;
+    document.querySelectorAll(".orders-view-tab").forEach((btn) => {
+      const on = btn.dataset.view === statsView;
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    });
+  }
+
+  function setStatsView(view) {
+    if (view !== "stats" && view !== "chart") return;
+    if (statsView === view) return;
+    statsView = view;
+    syncStatsView();
+    if (statsView === "chart") {
+      syncDefaultChartTags();
+      renderTagChartChips();
+      // chart must be visible before LWC measures width
+      requestAnimationFrame(() => renderTagChart());
+    }
+  }
+
   function renderAll() {
     if (!allRecords.length) {
       showEmpty(true);
@@ -586,11 +618,13 @@
       return;
     }
     showEmpty(false);
+    syncStatsView();
     renderAndBar();
     renderTagStats();
     syncDefaultChartTags();
     renderTagChartChips();
-    renderTagChart();
+    if (statsView === "chart") renderTagChart();
+    else destroyTagChart();
     renderOrderList();
     updateFilterCount();
   }
@@ -647,7 +681,7 @@
     else set.add(id);
     chartTagIds = [...set];
     renderTagChartChips();
-    renderTagChart();
+    if (statsView === "chart") renderTagChart();
   }
 
   function syncChartPeriodButtons() {
@@ -1029,6 +1063,10 @@
       const tr = e.target.closest("tr[data-tag-id]");
       if (!tr) return;
       setActiveTag(tr.dataset.tagId);
+    });
+
+    document.querySelectorAll(".orders-view-tab").forEach((btn) => {
+      btn.addEventListener("click", () => setStatsView(btn.dataset.view));
     });
 
     $("ordersTagChartChips")?.addEventListener("click", (e) => {

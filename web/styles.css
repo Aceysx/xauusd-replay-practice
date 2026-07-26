@@ -2314,23 +2314,23 @@ body.orders-page {
 .orders-and-row-label {
   font-weight: 600;
 }
-.orders-tag-chart-card {
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--panel);
-  padding: 16px;
-  min-width: 0;
+.orders-stats-card-head {
+  align-items: center;
+}
+.orders-view-tabs {
+  flex: 0 0 auto;
+}
+.orders-stats-pane[hidden],
+.orders-chart-pane[hidden] {
+  display: none !important;
 }
 .orders-tag-chart-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 10px 14px;
   margin-bottom: 10px;
-}
-.orders-tag-chart-head .report-section-title {
-  margin: 0;
 }
 .orders-tag-chart-tabs {
   display: flex;
