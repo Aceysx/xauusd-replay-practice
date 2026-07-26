@@ -2314,13 +2314,13 @@ body.orders-page {
 .orders-and-row-label {
   font-weight: 600;
 }
-.orders-stats-card-head {
+.orders-list-card-head {
   align-items: center;
 }
 .orders-view-tabs {
   flex: 0 0 auto;
 }
-.orders-stats-pane[hidden],
+.orders-list-pane[hidden],
 .orders-chart-pane[hidden] {
   display: none !important;
 }

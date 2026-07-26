@@ -24,8 +24,8 @@
   let chartPeriod = "day";
   /** @type {"count"|"pnl"} */
   let chartMetric = "count";
-  /** @type {"stats"|"chart"} */
-  let statsView = "stats";
+  /** @type {"list"|"chart"} */
+  let listView = "list";
   /** @type {string[]} */
   let chartTagIds = [];
   let chartTagIdsManual = false;
@@ -580,33 +580,34 @@
     }
   }
 
-  function syncStatsView() {
-    const showChart = statsView === "chart";
-    const statsPane = $("ordersStatsPane");
+  function syncListView() {
+    const showChart = listView === "chart";
+    const listPane = $("ordersListPane");
     const chartPane = $("ordersChartPane");
-    const statsHint = $("ordersStatsHint");
     const chartHint = $("ordersChartHint");
-    if (statsPane) statsPane.hidden = showChart;
+    const manageTags = $("ordersManageTags");
+    if (listPane) listPane.hidden = showChart;
     if (chartPane) chartPane.hidden = !showChart;
-    if (statsHint) statsHint.hidden = showChart;
     if (chartHint) chartHint.hidden = !showChart;
+    if (manageTags) manageTags.hidden = showChart;
     document.querySelectorAll(".orders-view-tab").forEach((btn) => {
-      const on = btn.dataset.view === statsView;
+      const on = btn.dataset.view === listView;
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-selected", on ? "true" : "false");
     });
   }
 
-  function setStatsView(view) {
-    if (view !== "stats" && view !== "chart") return;
-    if (statsView === view) return;
-    statsView = view;
-    syncStatsView();
-    if (statsView === "chart") {
+  function setListView(view) {
+    if (view !== "list" && view !== "chart") return;
+    if (listView === view) return;
+    listView = view;
+    syncListView();
+    if (listView === "chart") {
       syncDefaultChartTags();
       renderTagChartChips();
-      // chart must be visible before LWC measures width
       requestAnimationFrame(() => renderTagChart());
+    } else {
+      destroyTagChart();
     }
   }
 
@@ -618,12 +619,12 @@
       return;
     }
     showEmpty(false);
-    syncStatsView();
+    syncListView();
     renderAndBar();
     renderTagStats();
     syncDefaultChartTags();
     renderTagChartChips();
-    if (statsView === "chart") renderTagChart();
+    if (listView === "chart") renderTagChart();
     else destroyTagChart();
     renderOrderList();
     updateFilterCount();
@@ -681,7 +682,7 @@
     else set.add(id);
     chartTagIds = [...set];
     renderTagChartChips();
-    if (statsView === "chart") renderTagChart();
+    if (listView === "chart") renderTagChart();
   }
 
   function syncChartPeriodButtons() {
@@ -954,7 +955,7 @@
     renderTagStats();
     syncDefaultChartTags();
     renderTagChartChips();
-    if (statsView === "chart") renderTagChart();
+    if (listView === "chart") renderTagChart();
     updateFilterCount();
   }
 
@@ -1066,7 +1067,7 @@
     });
 
     document.querySelectorAll(".orders-view-tab").forEach((btn) => {
-      btn.addEventListener("click", () => setStatsView(btn.dataset.view));
+      btn.addEventListener("click", () => setListView(btn.dataset.view));
     });
 
     $("ordersTagChartChips")?.addEventListener("click", (e) => {
