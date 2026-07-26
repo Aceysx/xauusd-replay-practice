@@ -110,23 +110,46 @@ function pushDrawItem(partial) {
 
 /**
  * Horizontal ray from (time, price) extending left (toward earlier bars).
+ * @param {number} time
+ * @param {number} price
+ * @param {string} [color]
+ * @param {{ sourceOrderId?: string|number }} [meta]
  * @returns {number|null} drawing id
  */
-function addLeftHorizontalRay(time, price, color) {
+function addLeftHorizontalRay(time, price, color, meta) {
   const t = Number(time);
   const p = Number(price);
   if (!Number.isFinite(t) || !Number.isFinite(p)) return null;
-  const id = pushDrawItem({
+  const partial = {
     type: "ray",
     points: [
       { time: t, price: p },
       { time: t - 3600, price: p },
     ],
     color: color || DRAW_DEFAULT_COLORS.ray,
-  });
+  };
+  if (meta && meta.sourceOrderId != null) {
+    partial.sourceOrderId = String(meta.sourceOrderId);
+  }
+  const id = pushDrawItem(partial);
   notifyPracticeSave();
   renderDrawings();
   return id;
+}
+
+/** Ensure a left entry ray exists for an order record (no duplicate per order id). */
+function ensureOrderEntryLeftRay(rec) {
+  if (!rec) return null;
+  const orderId = String(rec.id ?? "");
+  const t = Number(rec.open_ts);
+  const p = Number(rec.entry);
+  if (!orderId || !Number.isFinite(t) || !Number.isFinite(p)) return null;
+  const existing = drawState.items.find(
+    (it) => it.type === "ray" && String(it.sourceOrderId ?? "") === orderId
+  );
+  if (existing) return existing.id;
+  const color = String(rec.direction || "").toLowerCase() === "buy" ? "#3dd68c" : "#f07178";
+  return addLeftHorizontalRay(t, p, color, { sourceOrderId: orderId });
 }
 
 function bringLayerForward(id) {

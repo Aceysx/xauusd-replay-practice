@@ -2756,6 +2756,9 @@ function toggleOrderChartVisible(id) {
 
   rec.chartVisible = true;
   state.selectedOrderId = rec.id;
+  if (typeof ensureOrderEntryLeftRay === "function") {
+    ensureOrderEntryLeftRay(rec);
+  }
   renderStatement();
   updateRrOverlay();
   updateChart({ preserveView: true });
