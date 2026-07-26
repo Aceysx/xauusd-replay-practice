@@ -419,30 +419,32 @@ body.resizing-panel {
   overflow: hidden;
 }
 .toolbar-bar {
-  padding: 10px 14px;
+  padding: 4px 10px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 8px;
   flex-shrink: 0;
   background: var(--panel);
+  min-height: 0;
 }
 .position-info {
   flex-shrink: 0;
-  padding: 10px 14px;
+  padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 15px;
+  border-radius: 5px;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
+  line-height: 1.3;
 }
 .position-info.empty {
   color: var(--muted);
   font-weight: normal;
 }
 .position-info .pos-sep {
-  margin: 0 8px;
+  margin: 0 6px;
   color: var(--muted);
   font-weight: normal;
 }
@@ -451,24 +453,25 @@ body.resizing-panel {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .toolbar button {
-  font-size: 16px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 10px 18px;
-  border-radius: 6px;
+  padding: 4px 10px;
+  border-radius: 5px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   cursor: pointer;
+  line-height: 1.25;
 }
 .toolbar button:hover { filter: brightness(1.12); }
 .toolbar button.btn-buy { border-color: var(--green); color: var(--green); }
 .toolbar button.btn-sell { border-color: var(--red); color: var(--red); }
 .toolbar button.btn-play { background: var(--accent); border-color: var(--accent); color: #fff; }
-.toolbar button.btn-speed { min-width: 52px; }
+.toolbar button.btn-speed { min-width: 40px; }
 .toolbar button.btn-jump { border-color: var(--accent); color: var(--accent); }
 .toolbar button:disabled,
 .date-input:disabled {
@@ -476,34 +479,37 @@ body.resizing-panel {
   cursor: not-allowed;
 }
 .toolbar button.btn-step {
-  min-width: 48px;
-  font-size: 18px;
-  padding: 10px 14px;
+  min-width: 32px;
+  font-size: 13px;
+  padding: 4px 8px;
 }
 .date-input {
-  font-size: 15px;
-  padding: 9px 10px;
-  border-radius: 6px;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 5px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
+  line-height: 1.25;
+  height: 26px;
+  box-sizing: border-box;
 }
 .timeframe-bar {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   flex-shrink: 0;
 }
 .timeframe-bar button {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 8px 10px;
-  border-radius: 6px;
+  padding: 4px 7px;
+  border-radius: 5px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--muted);
   cursor: pointer;
-  min-width: 40px;
+  min-width: 32px;
   line-height: 1;
 }
 .timeframe-bar button:hover {
@@ -521,26 +527,47 @@ body.resizing-panel {
 }
 .tb-sep {
   width: 1px;
-  height: 28px;
+  height: 18px;
   background: var(--border);
-  margin: 0 4px;
+  margin: 0 2px;
 }
 .panel-head {
-  padding: 8px 12px;
-  font-size: 15px;
+  padding: 4px 10px;
+  font-size: 13px;
   font-weight: 600;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
+  line-height: 1.3;
 }
 .panel-head-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+.toolbar .btn-import-orders,
+.toolbar .btn-orders-report {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1.25;
+  display: inline-flex;
+  align-items: center;
+}
+.toolbar .btn-import-orders:hover,
+.toolbar .btn-orders-report:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .btn-import-orders {
   font: inherit;
@@ -580,23 +607,8 @@ body.resizing-panel {
   font-size: 12px;
   font-weight: 400;
 }
-.session-stats {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  background: var(--bg);
-}
-.stat-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  font-size: 13px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-.stat-grid.empty {
-  color: var(--muted);
-  font-weight: normal;
+.toolbar .pat-toolbar-link {
+  font-size: 12px;
 }
 .stat-item {
   white-space: nowrap;

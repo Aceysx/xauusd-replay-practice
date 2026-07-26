@@ -6,7 +6,7 @@
   <title>回测练习</title>
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-  <link rel="stylesheet" href="/styles.css?v=25" />
+  <link rel="stylesheet" href="/styles.css?v=30" />
 </head>
 <body>
   <header>
@@ -104,6 +104,10 @@
           <button type="button" id="btnResetData" class="btn-reset" data-i18n="btn.reset" data-i18n-title="btn.reset.title">重置数据</button>
           <span class="tb-sep"></span>
           <a href="/patterns.html" class="btn-link pat-toolbar-link" data-i18n="pattern.manage">形态管理</a>
+          <a href="/orders.html" class="btn-orders-report" data-i18n="ordersPage.open">订单管理</a>
+          <a href="/report.html" class="btn-orders-report" data-i18n="report.open">报告</a>
+          <button type="button" id="btnImportOrders" class="btn-import-orders" data-i18n="orders.import">导入</button>
+          <input type="file" id="ordersImportFile" hidden accept=".csv,text/csv" tabindex="-1" />
         </div>
       </div>
       <div id="panelOrdersBody">
@@ -113,15 +117,6 @@
           <span class="muted" id="stmtCount"></span>
           <span class="muted orders-import-msg" id="ordersImportMsg" hidden></span>
         </span>
-        <div class="panel-head-actions">
-          <a href="/orders.html" class="btn-orders-report" data-i18n="ordersPage.open">订单管理</a>
-          <a href="/report.html" class="btn-orders-report" data-i18n="report.open">报告</a>
-          <button type="button" id="btnImportOrders" class="btn-import-orders" data-i18n="orders.import">导入</button>
-          <input type="file" id="ordersImportFile" hidden accept=".csv,text/csv" tabindex="-1" />
-        </div>
-      </div>
-      <div class="session-stats" id="sessionStats">
-        <div class="stat-grid" id="sessionStatsGrid" data-i18n="orders.empty">暂无平仓记录</div>
       </div>
       <div class="stmt-table-wrap">
         <table class="stmt-table">
@@ -168,6 +163,6 @@
   <script src="/drawings.js?v=8"></script>
   <script src="/pattern_shared.js?v=7"></script>
   <script src="/patterns.js?v=9"></script>
-  <script src="/app.js?v=88"></script>
+  <script src="/app.js?v=89"></script>
 </body>
 </html>

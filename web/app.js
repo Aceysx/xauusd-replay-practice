@@ -3322,41 +3322,7 @@ function computeSessionStats() {
 }
 
 function renderSessionStats() {
-  const grid = $("sessionStatsGrid");
-  if (!grid) return;
-  const s = computeSessionStats();
-  if (!s) {
-    grid.className = "stat-grid empty";
-    grid.textContent = t("orders.empty");
-    return;
-  }
-  grid.className = "stat-grid";
-  const pnlCls = s.totalNet >= 0 ? "pnl-pos" : "pnl-neg";
-  const lossCount = s.n - s.wins;
-  const pf =
-    s.profitFactor === Infinity
-      ? "∞"
-      : lossCount === 0 && s.totalNet > 0
-        ? "—"
-        : s.profitFactor.toFixed(2);
-  const rr = s.avgRr != null ? `1:${s.avgRr.toFixed(2)}` : "—";
-  const dailyText = (s.daily || [])
-    .slice(0, 5)
-    .map(([d, v]) => `${d} ${v >= 0 ? "+" : ""}${v.toFixed(2)}`)
-    .join(" · ");
-
-  grid.innerHTML = `
-    <span class="stat-item ${pnlCls}"><strong>${t("stat.totalPnl")}</strong>${s.totalNet >= 0 ? "+" : ""}${s.totalNet.toFixed(2)}</span>
-    <span class="stat-item"><strong>${t("stat.trades")}</strong>${s.n}</span>
-    <span class="stat-item"><strong>${t("stat.winRate")}</strong>${s.winRate.toFixed(1)}%</span>
-    <span class="stat-item"><strong>${t("stat.maxDd")}</strong>${s.maxDd.toFixed(2)}</span>
-    <span class="stat-item pnl-pos"><strong>${t("stat.avgWin")}</strong>+${s.avgWin.toFixed(2)}</span>
-    <span class="stat-item pnl-neg"><strong>${t("stat.avgLoss")}</strong>${s.avgLoss.toFixed(2)}</span>
-    <span class="stat-item"><strong>${t("stat.profitFactor")}</strong>${pf}</span>
-    <span class="stat-item"><strong>${t("stat.plannedRr")}</strong>${rr}</span>
-    <span class="stat-item"><strong>${t("stat.consecLoss", { n: s.maxConsecLosses })}</strong></span>
-    ${dailyText ? `<span class="stat-daily"><strong>${t("stat.daily")}</strong>${dailyText}</span>` : ""}
-  `;
+  /* Session stats strip removed from the statement panel; report page covers KPIs. */
 }
 
 async function deleteOrderRecord(id) {
