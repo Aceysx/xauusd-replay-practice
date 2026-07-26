@@ -504,9 +504,8 @@ def load_m5_by_date_range(start_date: str, end_date: str) -> pd.DataFrame:
     cached = _m5_range_cache.get(key)
     if cached is not None:
         return cached
-    start = pd.Timestamp(start_date)
-    end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(minutes=1)
-    df = load_m5_range(start, end)
+    # 走按日加载（含前一日文件 + 早盘时间窗），避免 UTC+8 07:00–07:50 被裁掉
+    df = load_ohlc_by_date_range(start_date, end_date, bar_minutes=5)
     if len(_m5_range_cache) >= _M5_RANGE_CACHE_MAX:
         _m5_range_cache.pop(next(iter(_m5_range_cache)))
     _m5_range_cache[key] = df

@@ -163,7 +163,16 @@ function findBarIndexByTime(ts) {
 }
 
 function findFirstBarOnDate(dateStr) {
-  // Align jump/session start with Asia/Shanghai calendar (display TZ), not UTC date.
+  // Jump targets the Asia/Shanghai morning of the picked day (≈ MT5 session
+  // open near 07:55), not UTC midnight (08:00 BJ) or BJ 00:00.
+  if (typeof dateKeyToStartTsInDisplayTz === "function") {
+    const dayStart = dateKeyToStartTsInDisplayTz(dateStr);
+    if (dayStart != null) {
+      const morningTs = dayStart + 7 * 3600; // 07:00 Asia/Shanghai
+      const idx = state.allBars.findIndex((b) => Number(b.time) >= morningTs);
+      if (idx >= 0) return idx;
+    }
+  }
   const keyOf =
     typeof dateKeyInDisplayTz === "function" ? dateKeyInDisplayTz : barDateKey;
   const idx = state.allBars.findIndex((b) => keyOf(b.time) === dateStr);
