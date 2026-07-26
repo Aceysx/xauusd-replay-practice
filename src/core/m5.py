@@ -421,13 +421,18 @@ def load_ohlc_range(
     bar_minutes: int = 5,
     data_dir: Path | None = None,
     pattern: str | None = None,
+    *,
+    extra_file_days_before: int = 0,
+    start_pad: timedelta | None = None,
+    end_pad: timedelta | None = None,
 ) -> pd.DataFrame:
     paths = get_paths()
     data_dir = data_dir or paths["m5_dir"]
     pattern = pattern or ohlc_glob_for_minutes(bar_minutes)
-    pad = timedelta(minutes=bar_minutes)
+    pad_start = start_pad if start_pad is not None else timedelta(minutes=bar_minutes)
+    pad_end = end_pad if end_pad is not None else timedelta(minutes=bar_minutes)
     frames = []
-    d = pd.Timestamp(start).date()
+    d = pd.Timestamp(start).date() - timedelta(days=max(0, int(extra_file_days_before)))
     end_d = pd.Timestamp(end).date()
     while d <= end_d:
         fp = data_dir / pattern.format(date=d.isoformat())
@@ -441,8 +446,8 @@ def load_ohlc_range(
     bars = _concat_ohlc_frames(frames)
     bars["timestamps"] = pd.to_datetime(bars["timestamps"])
     bars = _sort_by_timestamps(bars).drop_duplicates("timestamps", keep="last")
-    mask = (bars["timestamps"] >= pd.Timestamp(start) - pad) & (
-        bars["timestamps"] <= pd.Timestamp(end) + pad
+    mask = (bars["timestamps"] >= pd.Timestamp(start) - pad_start) & (
+        bars["timestamps"] <= pd.Timestamp(end) + pad_end
     )
     return bars.loc[mask].reset_index(drop=True)
 
@@ -452,9 +457,21 @@ def load_m5_range(start, end, m5_dir: Path | None = None) -> pd.DataFrame:
 
 
 def load_ohlc_by_date_range(start_date: str, end_date: str, bar_minutes: int = 5) -> pd.DataFrame:
+    """按交易日文件名区间加载。
+
+    MT5 按日 CSV：D 日文件通常从 UTC D-1 23:55 起；UTC D-1 23:00–23:50
+    （≈ 北京 D 日 07:00–07:50）仍在 D-1 文件。因此多读前一日文件，
+    并把起点时间窗向前扩 2 小时，避免 UTC+8 早盘被裁掉。
+    """
     start = pd.Timestamp(start_date)
     end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(minutes=bar_minutes)
-    return load_ohlc_range(start, end, bar_minutes=bar_minutes)
+    return load_ohlc_range(
+        start,
+        end,
+        bar_minutes=bar_minutes,
+        extra_file_days_before=1,
+        start_pad=timedelta(hours=2),
+    )
 
 
 def bars_to_chart_json(bars: pd.DataFrame) -> list[dict]:

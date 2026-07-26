@@ -163,7 +163,10 @@ function findBarIndexByTime(ts) {
 }
 
 function findFirstBarOnDate(dateStr) {
-  const idx = state.allBars.findIndex((b) => barDateKey(b.time) === dateStr);
+  // Align jump/session start with Asia/Shanghai calendar (display TZ), not UTC date.
+  const keyOf =
+    typeof dateKeyInDisplayTz === "function" ? dateKeyInDisplayTz : barDateKey;
+  const idx = state.allBars.findIndex((b) => keyOf(b.time) === dateStr);
   return idx >= 0 ? idx : 0;
 }
 
