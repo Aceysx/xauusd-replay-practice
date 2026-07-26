@@ -3260,13 +3260,6 @@ function openPosition(direction) {
     maxFloatProfit: 0,
     maxFloatLoss: 0,
   };
-  if (typeof addLeftHorizontalRay === "function") {
-    addLeftHorizontalRay(
-      bar.time,
-      bar.close,
-      direction === "buy" ? "#3dd68c" : "#f07178"
-    );
-  }
   refreshPositionLines();
   updatePositionInfoPanel();
   updateChart({ preserveView: true });
