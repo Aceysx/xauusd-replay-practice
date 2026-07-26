@@ -954,7 +954,7 @@
     renderTagStats();
     syncDefaultChartTags();
     renderTagChartChips();
-    renderTagChart();
+    if (statsView === "chart") renderTagChart();
     updateFilterCount();
   }
 
