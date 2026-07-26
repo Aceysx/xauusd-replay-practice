@@ -2314,6 +2314,45 @@ body.orders-page {
 .orders-and-row-label {
   font-weight: 600;
 }
+.orders-tag-chart-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  padding: 16px;
+  min-width: 0;
+}
+.orders-tag-chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  margin-bottom: 10px;
+}
+.orders-tag-chart-head .report-section-title {
+  margin: 0;
+}
+.orders-tag-chart-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.orders-tag-chart-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+.orders-tag-chart-empty {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.orders-tag-chart {
+  height: min(42vh, 380px);
+  min-height: 260px;
+}
 .orders-manage-tags {
   font-size: 13px;
   color: var(--accent);

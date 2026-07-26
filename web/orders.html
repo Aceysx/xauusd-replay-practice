@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>订单管理</title>
-  <link rel="stylesheet" href="/styles.css?v=26" />
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <link rel="stylesheet" href="/styles.css?v=27" />
 </head>
 <body class="orders-page">
   <header class="report-page-header orders-page-header">
@@ -74,6 +75,26 @@
         </div>
       </section>
 
+      <section class="orders-tag-chart-card" id="ordersTagChartCard">
+        <div class="orders-tag-chart-head">
+          <h2 class="report-section-title" data-i18n="ordersPage.chart.title">标签走势</h2>
+          <div class="orders-tag-chart-tabs">
+            <div class="report-period-tabs" role="group" aria-label="Period">
+              <button type="button" class="report-period-btn orders-chart-period active" data-period="day" data-i18n="report.periodDay">按天</button>
+              <button type="button" class="report-period-btn orders-chart-period" data-period="week" data-i18n="report.periodWeek">按周</button>
+              <button type="button" class="report-period-btn orders-chart-period" data-period="month" data-i18n="report.periodMonth">按月</button>
+            </div>
+            <div class="report-period-tabs" role="group" aria-label="Metric">
+              <button type="button" class="report-period-btn orders-chart-metric active" data-metric="count" data-i18n="ordersPage.chart.count">笔数</button>
+              <button type="button" class="report-period-btn orders-chart-metric" data-metric="pnl" data-i18n="ordersPage.chart.pnl">盈利</button>
+            </div>
+          </div>
+        </div>
+        <div class="orders-tag-chart-chips" id="ordersTagChartChips" role="group" aria-label="Chart tags"></div>
+        <p class="muted orders-tag-chart-empty" id="ordersTagChartEmpty" hidden data-i18n="ordersPage.chart.empty">当前筛选下暂无数据</p>
+        <div id="ordersTagChart" class="orders-tag-chart report-equity-chart"></div>
+      </section>
+
       <section class="orders-list-card">
         <div class="orders-section-head">
           <h2 class="report-section-title" data-i18n="ordersPage.orderList">订单明细</h2>
@@ -107,8 +128,8 @@
     </div>
   </main>
   <script>window.__API_BASE__ = "";</script>
-  <script src="/i18n.js?v=25"></script>
-  <script src="/order_stats.js?v=3"></script>
-  <script src="/orders_page.js?v=4"></script>
+  <script src="/i18n.js?v=26"></script>
+  <script src="/order_stats.js?v=4"></script>
+  <script src="/orders_page.js?v=5"></script>
 </body>
 </html>

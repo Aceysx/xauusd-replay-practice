@@ -411,6 +411,102 @@
     return row;
   }
 
+  function dateKeyFromTs(ts) {
+    if (ts == null || !Number.isFinite(Number(ts))) return "";
+    if (typeof global.dateKeyInDisplayTz === "function") {
+      return global.dateKeyInDisplayTz(ts) || "";
+    }
+    if (typeof global.barDateKey === "function") {
+      return global.barDateKey(ts) || "";
+    }
+    return new Date(Number(ts) * 1000).toISOString().slice(0, 10);
+  }
+
+  function dateKeyToStartSec(dateStr) {
+    if (!dateStr) return null;
+    if (typeof global.dateKeyToStartTsInDisplayTz === "function") {
+      return global.dateKeyToStartTsInDisplayTz(dateStr);
+    }
+    const ms = Date.parse(`${dateStr}T00:00:00+08:00`);
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+  }
+
+  /** Beijing period start (unix sec). mode: day|week|month */
+  function periodStartTs(ts, mode) {
+    const key = dateKeyFromTs(ts);
+    if (!key) return null;
+    const [ys, ms] = key.split("-");
+    if (mode === "month") {
+      return dateKeyToStartSec(`${ys}-${ms}-01`);
+    }
+    if (mode === "week") {
+      const start = dateKeyToStartSec(key);
+      if (start == null) return null;
+      const noon = Date.parse(`${key}T12:00:00+08:00`);
+      const dow = new Date(noon).getUTCDay(); // 0=Sun
+      const offset = (dow + 6) % 7;
+      return start - offset * 86400;
+    }
+    return dateKeyToStartSec(key);
+  }
+
+  /**
+   * Per-tag period series for count or pnl.
+   * @param {Array} records
+   * @param {string[]} tagIds
+   * @param {{ period?: string, metric?: string, tagCatalog?: Array }} opts
+   * @returns {Array<{tagId:string,label:string,points:Array<{time:number,value:number}>}>}
+   */
+  function computeTagPeriodSeries(records, tagIds, opts) {
+    const options = opts && typeof opts === "object" ? opts : {};
+    const period = options.period === "week" || options.period === "month" ? options.period : "day";
+    const metric = options.metric === "pnl" ? "pnl" : "count";
+    const catalog = Array.isArray(options.tagCatalog) ? options.tagCatalog : [];
+    const wanted = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(tagIds) ? tagIds : []) {
+      const id = String(raw ?? "").trim();
+      if (!id || id.startsWith("__") || seen.has(id)) continue;
+      seen.add(id);
+      wanted.push(id);
+    }
+    const labelOf = (id) => {
+      const found = catalog.find((x) => String(x.id) === String(id));
+      return found?.label || String(id);
+    };
+    /** @type {Map<string, Map<number, number>>} */
+    const byTag = new Map();
+    for (const id of wanted) byTag.set(id, new Map());
+
+    for (const r of Array.isArray(records) ? records : []) {
+      const tags = Array.isArray(r?.tags)
+        ? r.tags.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : [];
+      if (!tags.length) continue;
+      const ts = num(r.close_ts ?? r.open_ts, NaN);
+      if (!Number.isFinite(ts)) continue;
+      const bucket = periodStartTs(ts, period);
+      if (bucket == null) continue;
+      const net = num(r.net);
+      const delta = metric === "pnl" ? net : 1;
+      const hit = new Set();
+      for (const id of tags) {
+        if (!byTag.has(id) || hit.has(id)) continue;
+        hit.add(id);
+        const map = byTag.get(id);
+        map.set(bucket, (map.get(bucket) || 0) + delta);
+      }
+    }
+
+    return wanted.map((id) => {
+      const map = byTag.get(id) || new Map();
+      const points = [...map.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([time, value]) => ({ time, value }));
+      return { tagId: id, label: labelOf(id), points };
+    });
+  }
+
   function formatMt5Number(v, digits = 2) {
     if (v == null || !Number.isFinite(v)) return "—";
     if (v === Infinity) return "∞";
@@ -420,6 +516,8 @@
   global.computeMt5Report = computeMt5Report;
   global.computeTagStats = computeTagStats;
   global.computeTagAndStats = computeTagAndStats;
+  global.computeTagPeriodSeries = computeTagPeriodSeries;
+  global.periodStartTs = periodStartTs;
   global.makeAndTagKey = makeAndTagKey;
   global.parseAndTagKey = parseAndTagKey;
   global.normalizeAndTagIds = normalizeAndTagIds;

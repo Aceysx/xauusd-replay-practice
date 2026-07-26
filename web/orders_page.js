@@ -20,8 +20,28 @@
   let savedAndCombos = [];
   /** @type {{ key: string, dir: "asc" | "desc" }} */
   let tagSort = { key: "n", dir: "desc" };
+  /** @type {"day"|"week"|"month"} */
+  let chartPeriod = "day";
+  /** @type {"count"|"pnl"} */
+  let chartMetric = "count";
+  /** @type {string[]} */
+  let chartTagIds = [];
+  let chartTagIdsManual = false;
+  let tagChartApi = null;
+  let tagChartResizeObs = null;
   let saveTimer = null;
   let saveMsgTimer = null;
+
+  const CHART_COLORS = [
+    "#3dd68c",
+    "#5b9cf5",
+    "#f5a623",
+    "#e25555",
+    "#c084fc",
+    "#22d3ee",
+    "#f472b6",
+    "#a3e635",
+  ];
 
   function $(id) {
     return document.getElementById(id);
@@ -561,14 +581,202 @@
   function renderAll() {
     if (!allRecords.length) {
       showEmpty(true);
+      destroyTagChart();
       updateFilterCount();
       return;
     }
     showEmpty(false);
     renderAndBar();
     renderTagStats();
+    syncDefaultChartTags();
+    renderTagChartChips();
+    renderTagChart();
     renderOrderList();
     updateFilterCount();
+  }
+
+  function defaultTopChartTagIds(dated) {
+    const stats =
+      typeof computeTagStats === "function"
+        ? computeTagStats(dated, tagCatalog)
+        : { rows: [] };
+    return [...(stats.rows || [])]
+      .filter((r) => r && r.n > 0 && r.tagId && !String(r.tagId).startsWith("__"))
+      .sort((a, b) => (b.n || 0) - (a.n || 0))
+      .slice(0, 5)
+      .map((r) => String(r.tagId));
+  }
+
+  function syncDefaultChartTags() {
+    const dated = dateFilteredRecords();
+    if (!chartTagIdsManual) {
+      chartTagIds = defaultTopChartTagIds(dated);
+      return;
+    }
+    const valid = new Set(tagCatalog.map((x) => String(x.id)));
+    chartTagIds = chartTagIds.filter((id) => valid.has(String(id)));
+  }
+
+  function renderTagChartChips() {
+    const el = $("ordersTagChartChips");
+    if (!el) return;
+    el.innerHTML = "";
+    if (!tagCatalog.length) {
+      el.innerHTML = `<span class="muted">${escAttr(t("ordersPage.and.noTags"))}</span>`;
+      return;
+    }
+    const selected = new Set(chartTagIds);
+    for (const tg of tagCatalog) {
+      const id = String(tg.id);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "orders-and-chip orders-chart-chip" + (selected.has(id) ? " active" : "");
+      btn.dataset.tagId = id;
+      btn.textContent = tg.label || id;
+      btn.setAttribute("aria-pressed", selected.has(id) ? "true" : "false");
+      el.appendChild(btn);
+    }
+  }
+
+  function toggleChartTag(tagId) {
+    const id = String(tagId ?? "").trim();
+    if (!id) return;
+    chartTagIdsManual = true;
+    const set = new Set(chartTagIds);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    chartTagIds = [...set];
+    renderTagChartChips();
+    renderTagChart();
+  }
+
+  function syncChartPeriodButtons() {
+    document.querySelectorAll(".orders-chart-period").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.period === chartPeriod);
+    });
+  }
+
+  function syncChartMetricButtons() {
+    document.querySelectorAll(".orders-chart-metric").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.metric === chartMetric);
+    });
+  }
+
+  function destroyTagChart() {
+    if (tagChartResizeObs) {
+      tagChartResizeObs.disconnect();
+      tagChartResizeObs = null;
+    }
+    if (tagChartApi) {
+      try {
+        tagChartApi.remove();
+      } catch (_) {}
+    }
+    tagChartApi = null;
+    const el = $("ordersTagChart");
+    if (el) el.innerHTML = "";
+  }
+
+  function formatChartTick(time, mode) {
+    const key =
+      typeof dateKeyInDisplayTz === "function"
+        ? dateKeyInDisplayTz(time)
+        : tsToDateKey(time);
+    if (!key) return "—";
+    const [y, m, day] = key.split("-");
+    if (mode === "month") return `${y}-${m}`;
+    return `${y}-${m}-${day}`;
+  }
+
+  function formatChartCrosshair(time, mode) {
+    const zone = typeof t === "function" ? t("time.beijing") : "北京时间";
+    if (mode === "month") {
+      if (typeof fmtDisplayTime === "function") {
+        return fmtDisplayTime(time, { withZone: false }).slice(0, 7);
+      }
+      return formatChartTick(time, "month");
+    }
+    const day = tsToDateKey(time) || "—";
+    if (mode === "week") return `${day} (${t("report.periodWeek")})`;
+    return `${day} ${zone}`;
+  }
+
+  function renderTagChart() {
+    const el = $("ordersTagChart");
+    const emptyEl = $("ordersTagChartEmpty");
+    if (!el) return;
+    destroyTagChart();
+    syncChartPeriodButtons();
+    syncChartMetricButtons();
+
+    if (typeof LightweightCharts === "undefined" || typeof computeTagPeriodSeries !== "function") {
+      if (emptyEl) emptyEl.hidden = false;
+      return;
+    }
+
+    const dated = dateFilteredRecords();
+    const seriesList = computeTagPeriodSeries(dated, chartTagIds, {
+      period: chartPeriod,
+      metric: chartMetric,
+      tagCatalog,
+    }).filter((s) => s.points && s.points.length);
+
+    if (!seriesList.length) {
+      if (emptyEl) emptyEl.hidden = false;
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+
+    tagChartApi = LightweightCharts.createChart(el, {
+      width: el.clientWidth || 640,
+      height: el.clientHeight || 360,
+      layout: {
+        background: { color: "#12161e" },
+        textColor: "#8b95a8",
+      },
+      grid: {
+        vertLines: { color: "rgba(255,255,255,0.04)" },
+        horzLines: { color: "rgba(255,255,255,0.06)" },
+      },
+      rightPriceScale: { borderVisible: false },
+      timeScale: {
+        borderVisible: false,
+        fixLeftEdge: true,
+        fixRightEdge: true,
+        timeVisible: false,
+        secondsVisible: false,
+        tickMarkFormatter: (time) => formatChartTick(time, chartPeriod),
+      },
+      localization: {
+        locale: typeof getLocale === "function" && getLocale() === "en" ? "en-GB" : "zh-CN",
+        timeFormatter: (time) => formatChartCrosshair(time, chartPeriod),
+      },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    });
+
+    seriesList.forEach((s, i) => {
+      const color = CHART_COLORS[i % CHART_COLORS.length];
+      const line = tagChartApi.addLineSeries({
+        color,
+        lineWidth: 2,
+        title: s.label,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
+      line.setData(s.points);
+    });
+    tagChartApi.timeScale().fitContent();
+
+    const resize = () => {
+      if (!tagChartApi || !el.isConnected) return;
+      tagChartApi.applyOptions({
+        width: el.clientWidth,
+        height: el.clientHeight || 360,
+      });
+    };
+    tagChartResizeObs = new ResizeObserver(resize);
+    tagChartResizeObs.observe(el);
+    requestAnimationFrame(resize);
   }
 
   function setActiveTag(tagId) {
@@ -710,6 +918,9 @@
     }
     scheduleSave();
     renderTagStats();
+    syncDefaultChartTags();
+    renderTagChartChips();
+    renderTagChart();
     updateFilterCount();
   }
 
@@ -818,6 +1029,28 @@
       const tr = e.target.closest("tr[data-tag-id]");
       if (!tr) return;
       setActiveTag(tr.dataset.tagId);
+    });
+
+    $("ordersTagChartChips")?.addEventListener("click", (e) => {
+      const chip = e.target.closest("button.orders-chart-chip[data-tag-id]");
+      if (!chip) return;
+      toggleChartTag(chip.dataset.tagId);
+    });
+    document.querySelectorAll(".orders-chart-period").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.dataset.period;
+        if (!mode || mode === chartPeriod) return;
+        chartPeriod = mode;
+        renderTagChart();
+      });
+    });
+    document.querySelectorAll(".orders-chart-metric").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.dataset.metric;
+        if (!mode || mode === chartMetric) return;
+        chartMetric = mode;
+        renderTagChart();
+      });
     });
 
     const listBody = $("ordersListBody");
