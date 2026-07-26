@@ -108,6 +108,27 @@ function pushDrawItem(partial) {
   return id;
 }
 
+/**
+ * Horizontal ray from (time, price) extending left (toward earlier bars).
+ * @returns {number|null} drawing id
+ */
+function addLeftHorizontalRay(time, price, color) {
+  const t = Number(time);
+  const p = Number(price);
+  if (!Number.isFinite(t) || !Number.isFinite(p)) return null;
+  const id = pushDrawItem({
+    type: "ray",
+    points: [
+      { time: t, price: p },
+      { time: t - 3600, price: p },
+    ],
+    color: color || DRAW_DEFAULT_COLORS.ray,
+  });
+  notifyPracticeSave();
+  renderDrawings();
+  return id;
+}
+
 function bringLayerForward(id) {
   ensureItemsZ();
   const sorted = sortedDrawItems();
