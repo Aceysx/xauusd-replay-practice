@@ -179,9 +179,6 @@ main {
 .toolbar button.btn-reset {
   border-color: var(--red);
   color: var(--red);
-  font-size: 14px;
-  font-weight: 600;
-  padding: 10px 14px;
 }
 .draw-overlay {
   position: absolute;

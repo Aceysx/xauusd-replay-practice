@@ -148,8 +148,27 @@ function ensureOrderEntryLeftRay(rec) {
     (it) => it.type === "ray" && String(it.sourceOrderId ?? "") === orderId
   );
   if (existing) return existing.id;
-  const color = String(rec.direction || "").toLowerCase() === "buy" ? "#3dd68c" : "#f07178";
-  return addLeftHorizontalRay(t, p, color, { sourceOrderId: orderId });
+  return addLeftHorizontalRay(t, p, "#f0d78c", { sourceOrderId: orderId });
+}
+
+/** Remove order-linked left ray if it still exists. */
+function removeOrderEntryLeftRay(orderId) {
+  const id = String(orderId ?? "");
+  if (!id) return false;
+  const before = drawState.items.length;
+  drawState.items = drawState.items.filter(
+    (it) => !(it.type === "ray" && String(it.sourceOrderId ?? "") === id)
+  );
+  if (drawState.items.length === before) return false;
+  if (
+    drawState.selectedId != null &&
+    !drawState.items.some((it) => it.id === drawState.selectedId)
+  ) {
+    drawState.selectedId = null;
+  }
+  notifyPracticeSave();
+  renderDrawings();
+  return true;
 }
 
 function bringLayerForward(id) {

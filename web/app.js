@@ -2743,10 +2743,13 @@ function toggleOrderChartVisible(id) {
   const alreadyFocused =
     !!rec.chartVisible && String(state.selectedOrderId) === String(rec.id);
 
-  // 再点同一笔：隐藏开单区；点其他笔 / 首次：显示并聚焦到开仓时间
+  // 再点同一笔：隐藏开单区并同步删除关联射线；点其他笔 / 首次：显示并聚焦到开仓时间
   if (alreadyFocused) {
     rec.chartVisible = false;
     state.selectedOrderId = null;
+    if (typeof removeOrderEntryLeftRay === "function") {
+      removeOrderEntryLeftRay(rec.id);
+    }
     renderStatement();
     updateRrOverlay();
     updateChart({ preserveView: true });
